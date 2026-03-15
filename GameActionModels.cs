@@ -187,6 +187,7 @@ namespace GameServer
     {
         // action = "OPPONENT_PLAY_CARD"
         public CardInfo? cardPlayed; // 상대가 낸 카드
+        public int handNum; // 상대손에 있을때 위치
         public int targetEntityId; // 상대가 지정한 대상
         // TODO: 애니메이션 처리를 위한 추가 정보
     }
