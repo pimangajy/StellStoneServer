@@ -188,70 +188,79 @@ namespace GameServer
     }
 
     // ==================================================================
-    // 2. PlayerState (플레이어 상태 관리)
+    // 1. PlayerState 클래스
     // ==================================================================
-    
+
     /// <summary>
-    /// 플레이어 한 명의 모든 정보(덱, 손패, 필드, 마나)를 관리하는 클래스입니다.
+    /// 플레이어 한 명의 게임 내 상태(덱, 손패, 필드, 자원 등)를 관리하는 클래스입니다.
     /// </summary>
     public class PlayerState
     {
-        public string Uid { get; private set; }
-        public GamePlayer PlayerRef { get; private set; } // 통신용 참조
-        public GameEntity Leader { get; private set; }    // 영웅(본체)
+        public string Uid { get; private set; }              // 플레이어 고유 식별자
+        public GamePlayer PlayerRef { get; private set; }   // 네트워크 통신을 위한 플레이어 객체 참조
+        public GameEntity Leader { get; private set; }      // 플레이어의 영웅(본체) 개체
         
-        public List<GameCard> Deck { get; private set; } // 덱 (보이지 않음)
-        public List<GameCard> Hand { get; private set; } // 손패
+        public List<GameCard> Deck { get; private set; }    // 현재 덱에 남은 카드 목록
+        public List<GameCard> Hand { get; private set; }    // 현재 손에 들고 있는 카드 목록
 
-        // ★ [중요] 필드 슬롯 시스템 (배열 사용)
-        // List 대신 배열을 사용하여 '비어있는 칸(null)'을 표현합니다.
-        // Field[0] ~ Field[4] : 일반 하수인 (5칸)
+        // 필드 슬롯: [0]~[4]까지 총 5칸의 하수인 배치 구역
         public GameEntity?[] Field { get; private set; } = new GameEntity?[5];
         
-        // MemberZone[0] : 멤버 전용 (1칸)
+        // 멤버 존: 특정 '멤버' 타입의 개체가 배치되는 전용 구역 (1칸)
         public GameEntity?[] MemberZone { get; private set; } = new GameEntity?[1];
         
-        public int CurrentMana { get; set; }
-        public int MaxMana = 9 ;
+        public int CurrentMana { get; set; }                // 이번 턴에 사용 가능한 현재 마나
+        public int MaxMana = 0;                             // 이번 턴의 최대 마나 한도
         
-        private int _nextInstanceId = 1; // 손패 카드 ID 발급용 카운터
-        
+        private int _nextInstanceId = 1;                    // 카드 인스턴스 ID 발급을 위한 카운터
+
         public PlayerState(GamePlayer player, GameEntity leader)
         {
             Uid = player.Uid;
             PlayerRef = player;
             Leader = leader;
-            
             Deck = new List<GameCard>();
             Hand = new List<GameCard>();
-            
-            // 덱 정보가 있으면 GameCard 객체로 변환하여 채워넣음
-            if(player.Deck != null && player.Deck.cardIds != null)
+
+            // 게임 시작 시 플레이어의 덱 데이터를 기반으로 GameCard 객체들을 생성하여 덱에 채움
+            if (player.Deck != null && player.Deck.cardIds != null)
             {
-                foreach(string cardId in player.Deck.cardIds)
+                foreach (string cardId in player.Deck.cardIds)
                 {
+                    // 덱 내의 카드들도 구분을 위해 임시 인스턴스 ID 부여
                     string instanceId = $"DeckCard_{Uid}_{_nextInstanceId++}";
                     Deck.Add(new GameCard(cardId, instanceId));
                 }
             }
         }
-        
-        // 덱 섞기 (Fisher-Yates 알고리즘)
+
+        /// <summary>
+        /// 덱에 있는 카드들의 순서를 무작위로 섞습니다.
+        /// </summary>
         public void ShuffleDeck(Random rng)
         {
             int n = Deck.Count;
-            while (n > 1) { n--; int k = rng.Next(n + 1); (Deck[k], Deck[n]) = (Deck[n], Deck[k]); }
+            while (n > 1) 
+            { 
+                n--; 
+                int k = rng.Next(n + 1); 
+                (Deck[k], Deck[n]) = (Deck[n], Deck[k]); 
+            }
         }
 
-        // 카드 1장 뽑기
+        /// <summary>
+        /// 덱에서 카드 한 장을 뽑아 손패(Hand)로 이동시킵니다.
+        /// </summary>
+        /// <returns>뽑은 카드 객체, 덱이 비어있으면 null</returns>
         public GameCard? DrawCard()
         {
-            if (Deck.Count == 0) return null; // 탈진
+            if (Deck.Count == 0) return null; // 탈진 상태 등 처리 가능 구역
             
-            GameCard card = Deck[Deck.Count - 1]; // 맨 위 카드 가져오기
+            // 덱의 가장 마지막(위) 카드를 가져옴
+            GameCard card = Deck[Deck.Count - 1];
             Deck.RemoveAt(Deck.Count - 1);
             
-            // 손패로 들어올 때 인스턴스 ID 갱신 (HandCard_...)
+            // 손으로 들어올 때 클라이언트와 통신할 고유 인스턴스 ID 새로 부여
             card.InstanceId = $"HandCard_{Uid}_{_nextInstanceId++}";
             Hand.Add(card);
             return card;
@@ -259,107 +268,176 @@ namespace GameServer
     }
 
     // ==================================================================
-    // 3. 게임 상태 엔진 (GameState) - 게임의 핵심 두뇌
+    // 2. GameState 클래스 (핵심 로직 엔진)
     // ==================================================================
+
+    /// <summary>
+    /// 실제 게임의 흐름(턴, 페이즈, 규칙 검사, 전투 판정)을 총괄하는 핵심 엔진 클래스입니다.
+    /// </summary>
     public class GameState
     {
-        private readonly GameRoom _room; // 통신 담당
-        private readonly PlayerState _playerA;
-        private readonly PlayerState _playerB;
+        private readonly GameRoom _room;                     // 메시지 전송을 위한 방 참조
+        private readonly PlayerState _playerA;               // 플레이어 A의 상태
+        private readonly PlayerState _playerB;               // 플레이어 B의 상태
         
-        // 전체 Entity 검색용 딕셔너리 (ID로 개체를 빠르게 찾기 위함)
+        // 필드 위의 모든 개체(영웅, 하수인, 멤버)를 ID로 빠르게 찾기 위한 저장소
         private readonly Dictionary<int, GameEntity> _allEntities = new Dictionary<int, GameEntity>();
         
-        // 효과 처리기 (데미지, 힐, 버프 로직 분리)
+        // 카드 효과(데미지, 버프 등) 처리를 전담하는 프로세서
         private readonly GameEffectProcessor _effectProcessor;
 
-        private string _currentTurnPlayerUid;
-        private string _firstPlayerUid = ""; 
-        private string _secondPlayerUid = ""; 
-        private string? _currentPhase; // 현재 게임 단계 (Mulligan, Main, End 등)
+        private string _currentTurnPlayerUid = "";           // 현재 턴을 진행 중인 플레이어 UID
+        private string _firstPlayerUid = "";                // 이번 게임의 선공 플레이어 UID
+        private string _secondPlayerUid = "";               // 이번 게임의 후공 플레이어 UID
+        private string? _currentPhase;                       // 현재 게임 단계 (Mulligan, Main 등)
         
         public Random Rng { get; private set; } = new Random();
-        private int _nextGlobalEntityId = 100; // 하수인 ID는 100번부터 시작
-        private bool _isGameOver = false; 
-        private readonly object _lock = new object(); // 멀티스레드 안전장치
-        private bool _isGameStarted = false; 
+        private int _nextGlobalEntityId = 100;               // 하수인/멤버 생성을 위한 전역 개체 ID 카운터
+        private bool _isGameOver = false;                   // 게임 종료 여부
+        private readonly object _lock = new object();        // 멀티스레드 환경에서의 데이터 안전을 위한 락 객체
+        private bool _isGameStarted = false;                // 게임 루프 시작 여부
 
-        // 멀리건 결정 저장소
+        // 멀리건 결정을 저장 (양쪽 모두 완료될 때까지 대기용)
         private readonly Dictionary<string, C_MulliganDecision?> _mulliganDecisions = new Dictionary<string, C_MulliganDecision?>();
         
-        // 클라이언트에게 한 번에 보낼 변경 사항 목록
+        // 클라이언트에 한꺼번에 보낼 변경된 개체 데이터 목록
         private List<EntityData> _pendingUpdates = new List<EntityData>();
 
-        // [생성자] 게임방이 만들어질 때 호출됨
         public GameState(GameRoom room, GamePlayer playerA, GamePlayer playerB)
         {
             _room = room;
             
-            // 각 플레이어의 직업에 맞는 영웅 생성
-            string classA = playerA.Deck?.deckClass ?? "Neutral";
-            string classB = playerB.Deck?.deckClass ?? "Neutral";
+            // 1. 각 플레이어의 영웅 개체 생성 (기본 체력 30)
+            GameCard leaderCardA = new GameCard("Leader_A_Instance", playerA.Deck?.deckClass ?? "Neutral", 30);
+            GameEntity leaderA = new GameEntity(1, leaderCardA, playerA.Uid);
+            
+            GameCard leaderCardB = new GameCard("Leader_B_Instance", playerB.Deck?.deckClass ?? "Neutral", 30);
+            GameEntity leaderB = new GameEntity(2, leaderCardB, playerB.Uid);
 
-            GameCard leaderCardA = new GameCard("Leader_A_Instance", classA, 30);
-            GameEntity leaderA = new GameEntity(1, leaderCardA, playerA.Uid); // ID: 1
-
-            GameCard leaderCardB = new GameCard("Leader_B_Instance", classB, 30);
-            GameEntity leaderB = new GameEntity(2, leaderCardB, playerB.Uid); // ID: 2
-
+            // 2. 전역 개체 목록에 등록 (ID 1, 2번은 영웅 고정)
             _allEntities.Add(leaderA.EntityId, leaderA);
             _allEntities.Add(leaderB.EntityId, leaderB);
             
+            // 3. 플레이어 상태 초기화
             _playerA = new PlayerState(playerA, leaderA);
             _playerB = new PlayerState(playerB, leaderB);
             
+            // 4. 멀리건 상태 초기화
             _mulliganDecisions[_playerA.Uid] = null;
             _mulliganDecisions[_playerB.Uid] = null;
             
-            _currentTurnPlayerUid = _playerA.Uid;
-
             _effectProcessor = new GameEffectProcessor(this);
         }
 
+        /// <summary>
+        /// 클라이언트(WebSocket)로부터 받은 JSON 메시지를 해석하고 권한을 확인하여 실행합니다.
+        /// </summary>
+        public async Task HandlePlayerActionAsync(string senderUid, string messageJson)
+        {
+            BaseGameAction? baseAction = null;
+            try { baseAction = JsonConvert.DeserializeObject<BaseGameAction>(messageJson); } catch { return; }
+            if (baseAction == null) return;
+
+            // --- 봇 제어 및 권한 확인 로직 ---
+            // 테스트 환경 지원: 봇의 턴일 때 유저가 보낸 명령을 봇의 명령으로 승인함
+            
+            if (_currentPhase == "Mulligan")
+            {
+                // 멀리건 페이즈: 턴에 관계없이 각자 전송 가능
+                PlayerState currentPlayer = GetPlayerState(_currentTurnPlayerUid);
+                
+                // 보낸 사람이 현재 활성 플레이어가 아니지만, 그 플레이어가 봇인 경우 (대리 전송 허용)
+                if (senderUid != _currentTurnPlayerUid && currentPlayer.PlayerRef.IsBot)
+                {
+                    await DispatchActionAsync(_currentTurnPlayerUid, baseAction.action!, messageJson);
+                }
+                else
+                {
+                    await DispatchActionAsync(senderUid, baseAction.action!, messageJson);
+                }
+            }
+            else
+            {
+                // 메인 게임 중: 턴 주인인지 확인
+                PlayerState turnOwner = GetPlayerState(_currentTurnPlayerUid);
+                if (turnOwner.PlayerRef.IsBot)
+                {
+                    // 봇의 턴이면 유저의 패킷을 봇의 권한으로 실행
+                    await DispatchActionAsync(_currentTurnPlayerUid, baseAction.action!, messageJson);
+                }
+                else
+                {
+                    // 유저의 턴이면 보낸 사람 본인의 UID로 실행
+                    await DispatchActionAsync(senderUid, baseAction.action!, messageJson);
+                }
+            }
+        }
+
+        /// <summary>
+        /// 검증된 UID와 액션 종류에 따라 실제 로직 함수를 호출합니다.
+        /// </summary>
+        private async Task DispatchActionAsync(string uid, string action, string json)
+        {
+            // 턴 주인이 아닌데 멀리건 페이즈도 아니라면 무시
+            if (_currentPhase != "Mulligan" && uid != _currentTurnPlayerUid) 
+            {
+                return;
+            }
+
+            switch (action)
+            {
+                case "MULLIGAN_DECISION": // 멀리건 결정
+                    var mul = JsonConvert.DeserializeObject<C_MulliganDecision>(json);
+                    if (mul != null) await ProcessMulliganDecisionAsync(uid, mul);
+                    break;
+                case "END_TURN":          // 턴 종료
+                    await ProcessEndTurnAsync(uid);
+                    break;
+                case "PLAY_CARD":        // 카드 내기
+                    var play = JsonConvert.DeserializeObject<C_PlayCard>(json);
+                    if (play != null) await ProcessPlayCardAsync(uid, play);
+                    break;
+                case "ATTACK":           // 공격 명령
+                    var atk = JsonConvert.DeserializeObject<C_Attack>(json);
+                    if (atk != null) await ProcessAttackAsync(uid, atk);
+                    break;
+            }
+        }
+
         // ------------------------------------------------------------------
-        // [Phase 1] 멀리건 (카드 교체 단계)
+        // [Phase 1] 멀리건 (Mulligan) 단계
         // ------------------------------------------------------------------
+
+        /// <summary>
+        /// 게임의 첫 시작인 멀리건 페이즈를 시작합니다.
+        /// </summary>
         public async Task StartMulliganAsync()
         {
-            Console.WriteLine($"[GameState {_room.GameId}] 🎲 멀리건 페이즈 시작.");
+            Console.WriteLine($"[GameState] 멀리건 페이즈 시작.");
             _currentPhase = "Mulligan";
-            _isGameStarted = false; 
             
-            // 선공/후공 결정 (50% 확률)
+            // 1. 선공/후공 무작위 결정
             if (Rng.Next(2) == 0) { _firstPlayerUid = _playerA.Uid; _secondPlayerUid = _playerB.Uid; }
             else { _firstPlayerUid = _playerB.Uid; _secondPlayerUid = _playerA.Uid; }
-
-            // 테스트용
-            _firstPlayerUid = _playerB.Uid;
             _currentTurnPlayerUid = _firstPlayerUid; 
-            Console.WriteLine($"선공 {_currentTurnPlayerUid}");
 
-            // 덱 섞기
+            // 2. 덱 섞기
             _playerA.ShuffleDeck(Rng);
             _playerB.ShuffleDeck(Rng);
 
-            // 초기 손패 5장씩 드로우
+            // 3. 시작 카드 5장씩 뽑기
             List<CardInfo> handA = new List<CardInfo>();
             List<CardInfo> handB = new List<CardInfo>();
 
             for (int i = 0; i < 5; i++)
             {
                 var cardA = _playerA.DrawCard();
-                if (cardA != null) {
-                    Console.WriteLine($"[Mulligan] 🃏 {_playerA.Uid} 드로우: {cardA.CardId}");
-                    handA.Add(cardA.ToCardInfo());
-                }
+                if (cardA != null) handA.Add(cardA.ToCardInfo());
                 var cardB = _playerB.DrawCard();
-                if (cardB != null) {
-                    Console.WriteLine($"[Mulligan] 🃏 {_playerB.Uid} 드로우: {cardB.CardId}");
-                    handB.Add(cardB.ToCardInfo());
-                }
+                if (cardB != null) handB.Add(cardB.ToCardInfo());
             }
 
-            // 클라이언트에게 멀리건 정보 전송 (교체할 시간 30초)
+            // 4. 클라이언트에 멀리건 정보 전송 (30초 제한시간 부여)
             long endTime = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 30;
             var msgA = new S_MulliganInfo { action = "MULLIGAN_INFO", cardsToMulligan = handA, mulliganEndTime = endTime };
             var msgB = new S_MulliganInfo { action = "MULLIGAN_INFO", cardsToMulligan = handB, mulliganEndTime = endTime };
@@ -367,71 +445,36 @@ namespace GameServer
             await _room.SendMessageToPlayerAsync(_playerA.PlayerRef, JsonConvert.SerializeObject(msgA));
             await _room.SendMessageToPlayerAsync(_playerB.PlayerRef, JsonConvert.SerializeObject(msgB));
 
-            // (봇 처리) 봇은 카드를 바꾸지 않음
-            if (_playerA.PlayerRef.IsBot) await ProcessMulliganDecisionAsync(_playerA.Uid, new C_MulliganDecision { cardInstanceIdsToReplace = new List<string>() });
-            if (_playerB.PlayerRef.IsBot) await ProcessMulliganDecisionAsync(_playerB.Uid, new C_MulliganDecision { cardInstanceIdsToReplace = new List<string>() });
+            // [봇 자동화 제거] 이제 클라이언트 측 테스트 로직이 봇의 결정을 서버로 보내야 합니다.
         }
-
-        // [중앙 관제탑] 클라이언트가 보낸 메시지를 종류별로 분배하는 함수
-        public async Task HandlePlayerActionAsync(string senderUid, string messageJson)
-        {
-            Console.WriteLine($"[GameRoom {messageJson}] ");
-            BaseGameAction? baseAction = null;
-            try { baseAction = JsonConvert.DeserializeObject<BaseGameAction>(messageJson); } catch {}
-
-            if (baseAction == null) return;
-            // 멀리건 단계가 아닌데 내 턴이 아니면 명령 무시
-            if (_currentPhase != "Mulligan" && senderUid != _currentTurnPlayerUid) 
-            {
-                var failMsg = new S_PlayCardFail { 
-                 action = "PLAY_CARD_FAIL", 
-                 reason = "Not your turn" 
-                };
-                await _room.SendMessageToPlayerAsync(GetPlayerState(senderUid).PlayerRef, JsonConvert.SerializeObject(failMsg));
-                Console.WriteLine("후공이 카드를 사용함");
-                return;
-            }
-
-            switch (baseAction.action)
-            {
-                case "MULLIGAN_DECISION": // 멀리건 결정
-                    var mul = JsonConvert.DeserializeObject<C_MulliganDecision>(messageJson);
-                    if (mul != null) await ProcessMulliganDecisionAsync(senderUid, mul);
-                    break;
-                case "END_TURN": // 턴 종료
-                    if (_currentPhase == "Main") await ProcessEndTurnAsync(senderUid);
-                    break;
-                case "PLAY_CARD": // 카드 내기
-                    if (_currentPhase == "Main") {
-                        Console.WriteLine($"[GameRoom 카드 사용 ");
-                        var play = JsonConvert.DeserializeObject<C_PlayCard>(messageJson);
-                        if (play != null) await ProcessPlayCardAsync(senderUid, play);
-                    }
-                    break;
-                case "ATTACK": // 공격
-                    if (_currentPhase == "Main") {
-                        var atk = JsonConvert.DeserializeObject<C_Attack>(messageJson);
-                        if (atk != null) await ProcessAttackAsync(senderUid, atk);
-                    }
-                    break;
-            }
-        }
-
-        // [멀리건 처리] 유저가 교체할 카드를 고르면 처리
+        
+        /// <summary>
+        /// 플레이어가 멀리건에서 교체할 카드를 선택했을 때 이를 처리합니다.
+        /// </summary>
         private async Task ProcessMulliganDecisionAsync(string senderUid, C_MulliganDecision action)
         {
-            lock (_lock) {
+            PlayerState player = GetPlayerState(senderUid);
+            PlayerState opponent = GetPlayerState(senderUid, true);
+
+            // 이미 결정을 내렸는지 확인 (중복 요청 방지)
+            lock (_lock) 
+            {
                 if (_mulliganDecisions.ContainsKey(senderUid) && _mulliganDecisions[senderUid] != null) return;
                 _mulliganDecisions[senderUid] = action;
             }
 
-            Console.WriteLine($"[GameState] {senderUid} 멀리건 완료.");
-            PlayerState player = GetPlayerState(senderUid);
+            List<int> replacedIndices = new List<int>();
             List<GameCard> cardsToReturn = new List<GameCard>();
 
-            // 1. 교체할 카드를 손에서 빼둠
+            // 1. 교체할 카드를 손패에서 제거하고 보관
             if (action.cardInstanceIdsToReplace != null)
             {
+                for (int i = 0; i < player.Hand.Count; i++)
+                {
+                    if (action.cardInstanceIdsToReplace.Contains(player.Hand[i].InstanceId))
+                        replacedIndices.Add(i);
+                }
+
                 foreach (string id in action.cardInstanceIdsToReplace)
                 {
                     GameCard? c = player.Hand.FirstOrDefault(x => x.InstanceId == id);
@@ -439,125 +482,122 @@ namespace GameServer
                 }
             }
 
-            // 2. 뺀 만큼 새로 뽑음
+            // 2. 제거한 수만큼 새로운 카드를 덱에서 뽑음
             for (int i = 0; i < cardsToReturn.Count; i++) player.DrawCard();
             
-            // 3. 빼둔 카드를 다시 덱에 넣고 섞음
+            // 3. 뺐던 카드를 다시 덱에 넣고 섞음
             if (cardsToReturn.Count > 0) { player.Deck.AddRange(cardsToReturn); player.ShuffleDeck(Rng); }
 
-            // 4. 양쪽 다 준비됐으면 게임 시작
+            // 4. 상대방에게 나의 멀리건 완료 상태(몇 장 바꿨는지)를 알림
+            var statusMsg = new S_OpponentMulliganStatus
+            {
+                action = "OPPONENT_MULLIGAN_STATUS",
+                opponentUid = senderUid,
+                replacedIndices = replacedIndices,
+                replacedCount = replacedIndices.Count,
+                isReady = true
+            };
+            await _room.SendMessageToPlayerAsync(opponent.PlayerRef, JsonConvert.SerializeObject(statusMsg));
+
+            // 5. 두 플레이어 모두 준비되었는지 확인 후 게임 시작
             bool allReady = false;
             lock (_lock) { allReady = _mulliganDecisions.Values.All(x => x != null); }
 
             if (allReady)
             {
-                bool start = false;
-                lock(_lock) { if(!_isGameStarted) { _isGameStarted = true; start = true; } }
-                if(start) await StartGameAsync();
+                lock(_lock) 
+                { 
+                    if(!_isGameStarted) { _isGameStarted = true; } 
+                    else { return; } 
+                }
+                await StartGameAsync();
             }
         }
 
         // ------------------------------------------------------------------
         // [Phase 2] 게임 시작 및 턴 진행
         // ------------------------------------------------------------------
+
+        /// <summary>
+        /// 멀리건이 끝나고 실제 대전 페이즈로 진입합니다.
+        /// </summary>
         private async Task StartGameAsync()
         {
-            Console.WriteLine($"[GameState] ⚔️ 게임 시작!");
-
-            // =========================================================
-            // [테스트용] 강제로 적 필드에 더미 하수인 생성 (ID: 999)
-            // =========================================================
-            if (true) // 테스트가 끝나면 false로 바꾸거나 지우세요
-            {
-                // 1. 더미 카드 데이터 생성
-                GameCard dummyCard = new GameCard("Test_Dummy_Card", "Dummy_Instance_999");
-                dummyCard.CurrentAttack = 2;
-                dummyCard.CurrentHealth = 10;
-
-                // 2. 더미 엔티티 생성 (서버쪽 적은 _secondPlayerUid 혹은 상황에 따라 다름)
-                // 테스트 환경에서 내가 _firstPlayerUid라면, 적은 _secondPlayerUid입니다.
-                string enemyUid = _secondPlayerUid; 
-                
-                GameEntity dummyEntity = new GameEntity(999, dummyCard, enemyUid);
-                dummyEntity.Position = 0; // 0번 슬롯
-                dummyEntity.IsMember = false;
-
-                // 3. 서버 메모리에 등록 (이게 있어야 ProcessAttackAsync가 인식함)
-                _allEntities.Add(999, dummyEntity);
-                
-                // 4. 적 플레이어 필드 배열에도 등록
-                PlayerState enemyState = GetPlayerState(enemyUid);
-                enemyState.Field[0] = dummyEntity;
-
-                Console.WriteLine($"[TEST] 테스트용 더미 하수인(ID:999)이 {enemyUid} 필드에 생성됨.");
-                
-                // (선택) 클라이언트에게 "여기 하수인 있어"라고 알려주는 패킷을 보낼 수도 있지만,
-                // 지금은 클라이언트가 'DummyEntitySetup.cs'로 스스로 그리고 있으니 생략해도 됨.
-            }
-            // =========================================================
-
-            
             _currentPhase = "StartGame";
             var handA = _playerA.Hand.Select(c => c.ToCardInfo()).ToList();
             var handB = _playerB.Hand.Select(c => c.ToCardInfo()).ToList();
 
-            // 양쪽에게 "게임 시작! 최종 손패는 이거야" 라고 알림
+            // 양쪽 플레이어에게 최종 손패와 함께 게임 시작을 알림
             await _room.SendMessageToPlayerAsync(_playerA.PlayerRef, JsonConvert.SerializeObject(new S_GameReady { action = "GAME_READY", firstPlayerUid = _firstPlayerUid, finalHand = handA }));
             await _room.SendMessageToPlayerAsync(_playerB.PlayerRef, JsonConvert.SerializeObject(new S_GameReady { action = "GAME_READY", firstPlayerUid = _firstPlayerUid, finalHand = handB }));
 
-            await Task.Delay(2000); // 연출용 대기
-            _ = StartTurnAsync(_firstPlayerUid); // 선공 플레이어 턴 시작
+            await Task.Delay(1500); // 연출을 위한 잠시 대기
+            await StartTurnAsync(_firstPlayerUid); // 선공 플레이어 턴 시작
         }
 
-        // [턴 시작] 마나 증가, 드로우, 페이즈 전환
+        /// <summary>
+        /// 특정 플레이어의 새로운 턴을 시작합니다 (마나 증가, 드로우 등).
+        /// </summary>
         private async Task StartTurnAsync(string uid)
         {
             _currentTurnPlayerUid = uid;
             PlayerState p = GetPlayerState(uid);
             PlayerState op = GetPlayerState(uid, true);
 
-            // 1. Standby 페이즈 (턴 시작 알림)
+            // 1. Standby 페이즈 알림
             _currentPhase = "Standby";
             var phaseMsg = JsonConvert.SerializeObject(new S_PhaseStart { action="PHASE_START", phase="Standby", newTurnPlayerUid=uid });
             await _room.SendMessageToPlayerAsync(p.PlayerRef, phaseMsg);
             await _room.SendMessageToPlayerAsync(op.PlayerRef, phaseMsg);
 
-            // 2. 마나 증가 (최대 10) 및 회복
+            // 2. 마나 충전 (최대 10까지 1씩 증가)
             p.MaxMana = Math.Min(p.MaxMana + 1, 10);
             p.CurrentMana = p.MaxMana;
-            await _room.SendMessageToPlayerAsync(p.PlayerRef, JsonConvert.SerializeObject(new S_UpdateMana { action="UPDATE_MANA", currentMana=p.CurrentMana, maxMana=p.MaxMana }));
-            await _room.SendMessageToPlayerAsync(op.PlayerRef, JsonConvert.SerializeObject(new S_UpdateMana { action="UPDATE_MANA", currentMana=op.CurrentMana, maxMana=op.MaxMana }));
-
+            
+            await BroadcastManaUpdate(p, op);
             await Task.Delay(1000);
 
-            // 3. Draw 페이즈 (카드 1장 뽑기)
+            // 3. Draw 페이즈 (카드 한 장 뽑기)
             _currentPhase = "Draw";
             GameCard? drawnCard = p.DrawCard();
-            if (drawnCard != null) Console.WriteLine($"[Turn] 🃏 {uid} 드로우: {drawnCard.CardId}");
-            
-            // 드로우 정보 전송 (나는 내 카드를 보고, 상대는 뒷면만 봄)
+            // 내 드로우 카드는 나만 볼 수 있도록 전송
             await _room.SendMessageToPlayerAsync(p.PlayerRef, JsonConvert.SerializeObject(new S_PhaseStart { action="PHASE_START", phase="Draw", drawnCard=drawnCard?.ToCardInfo() }));
             await _room.SendMessageToPlayerAsync(op.PlayerRef, JsonConvert.SerializeObject(new S_PhaseStart { action="PHASE_START", phase="Draw", drawnCard=null }));
 
             await Task.Delay(1000);
 
-            // 4. Main 페이즈 (플레이어가 행동할 수 있는 시간)
+            // 4. Main 페이즈 시작 (실제 플레이 타임, 60초 제한)
             _currentPhase = "Main";
-            long endTime = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 60; // 턴 제한시간 60초
-            var mainMsg = JsonConvert.SerializeObject(new S_PhaseStart { action="PHASE_START", phase="Main", turnEndTime=endTime });
-            await _room.SendMessageToPlayerAsync(p.PlayerRef, mainMsg);
-            await _room.SendMessageToPlayerAsync(op.PlayerRef, mainMsg);
+            long turnEndTime = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 60; 
+            var mainMsg = new S_PhaseStart { action = "PHASE_START", phase = "Main", turnEndTime = turnEndTime };
             
-            // 이번 턴 공격권 초기화 (소환 후유증 해제 등은 여기서 처리 가능)
+            await _room.SendMessageToPlayerAsync(p.PlayerRef, JsonConvert.SerializeObject(mainMsg));
+            await _room.SendMessageToPlayerAsync(op.PlayerRef, JsonConvert.SerializeObject(mainMsg));
+            
+            // 5. 필드 위 개체들의 공격 기회 초기화
             foreach(var e in p.Field) { if(e!=null) { e.HasAttacked = false; e.CanAttack = true; } }
             foreach(var e in p.MemberZone) { if(e!=null) { e.HasAttacked = false; e.CanAttack = true; } }
             p.Leader.CanAttack = true; p.Leader.HasAttacked = false;
         }
 
-        // [턴 종료]
+        /// <summary>
+        /// 양쪽 플레이어에게 현재 마나 상태를 최신화하여 보냅니다.
+        /// </summary>
+        private async Task BroadcastManaUpdate(PlayerState p, PlayerState op)
+        {
+            var manaMsg = new S_UpdateMana { action="UPDATE_MANA", ownerUid=p.Uid, currentMana=p.CurrentMana, maxMana=p.MaxMana };
+            string json = JsonConvert.SerializeObject(manaMsg);
+            await _room.SendMessageToPlayerAsync(p.PlayerRef, json);
+            await _room.SendMessageToPlayerAsync(op.PlayerRef, json);
+        }
+
+        /// <summary>
+        /// 플레이어가 턴 종료 버튼을 눌렀을 때의 처리입니다.
+        /// </summary>
         private async Task ProcessEndTurnAsync(string senderUid)
         {
-            if (senderUid != _currentTurnPlayerUid) return;
+            if (senderUid != _currentTurnPlayerUid) return; // 내 턴이 아니면 무시
+            
             _currentPhase = "End";
             var msg = JsonConvert.SerializeObject(new S_PhaseStart { action="PHASE_START", phase="End" });
             await _room.SendMessageToPlayerAsync(_playerA.PlayerRef, msg);
@@ -565,302 +605,146 @@ namespace GameServer
             
             await Task.Delay(500);
             
-            // 상대방 턴 시작
+            // 상대방의 턴으로 교체
             string nextUid = (senderUid == _playerA.Uid) ? _playerB.Uid : _playerA.Uid;
             await StartTurnAsync(nextUid);
         }
 
-        // ==================================================================
-        // ★ [핵심] 카드 내기 & 소환 로직 (고정 슬롯 시스템 적용)
-        // ==================================================================
+        // ------------------------------------------------------------------
+        // [Phase 3] 전투 및 카드 플레이 로직
+        // ------------------------------------------------------------------
+
+        /// <summary>
+        /// 손에 있는 카드를 필드에 내거나 사용하는 로직입니다.
+        /// </summary>
         private async Task ProcessPlayCardAsync(string senderUid, C_PlayCard action)
         {
             PlayerState p = GetPlayerState(senderUid);
             PlayerState op = GetPlayerState(senderUid, true);
-            _pendingUpdates.Clear(); // 이번 액션으로 변경된 사항들을 담을 리스트 초기화
+            _pendingUpdates.Clear();
 
-            // 1. 손패에서 카드 찾기
+            // 1. 카드 존재 및 마나 자원 확인
             GameCard? card = p.Hand.FirstOrDefault(c => c.InstanceId == action.handCardInstanceId);
-            if (card == null) 
-            {
-                await SendPlayCardFail(p, action.handCardInstanceId!, "Card not found");
-                return;
-            }
+            if (card == null || p.CurrentMana < card.CurrentCost) return;
 
-            // 2. 마나 확인
-            if (p.CurrentMana < card.CurrentCost)
-            {
-                await SendPlayCardFail(p, action.handCardInstanceId!, "Not enough mana");
-                return;
-            }
-
-            string cardName = card.CardId;
-            var cardData = ServerCardDatabase.Instance.GetCardData(card.CardId);
-            if (cardData != null && !string.IsNullOrEmpty(cardData.Name)) cardName = cardData.Name;
-
-            // ------------------------------------------------------------------
-            // 3. 소환 유효성 검사 (자원 소모 전에 먼저 체크!)
-            // ------------------------------------------------------------------
+            // 2. 하수인 또는 멤버인지 확인
             bool isUnit = card.Type == "Minion" || card.Type == "하수인" || card.Type == "Member" || card.Type == "멤버";
             bool isMember = (card.Type == "멤버" || card.Type == "Member");
-            GameEntity?[] targetZone = null!;
-            int spawnPos = action.position; // 클라이언트가 요청한 소환 위치 (0~4)
+            GameEntity?[] targetZone = isMember ? p.MemberZone : p.Field;
 
             if (isUnit)
             {
-                // 하수인이냐 멤버냐에 따라 들어갈 배열 결정
-                targetZone = isMember ? p.MemberZone : p.Field;
-                int maxCount = targetZone.Length;
+                // 3. 소환 위치(슬롯) 유효성 및 빈 자리인지 확인
+                if (action.position < 0 || action.position >= targetZone.Length || targetZone[action.position] != null) return;
+                
+                // 4. 자원 소모 및 손패 제거
+                p.CurrentMana -= card.CurrentCost;
+                p.Hand.Remove(card);
 
-                // 3-1. 인덱스 범위 확인 (0 이상, 배열 길이 미만)
-                if (spawnPos < 0 || spawnPos >= maxCount)
-                {
-                    Console.WriteLine($"[GameRoom {_room.GameId}] ⚠️ 잘못된 슬롯 위치: {spawnPos} (Max: {maxCount-1})");
-                    await SendPlayCardFail(p, action.handCardInstanceId!, "Invalid position");
-                    return;
-                }
-
-                // 3-2. ★ 핵심: 해당 자리가 비어있는지(null) 확인
-                if (targetZone[spawnPos] != null)
-                {
-                    Console.WriteLine($"[GameRoom {_room.GameId}] ⚠️ 소환 실패: 슬롯 {spawnPos}에 이미 하수인이 있음.");
-                    await SendPlayCardFail(p, action.handCardInstanceId!, "Slot occupied");
-                    return;
-                }
-            }
-            // ------------------------------------------------------------------
-
-            // 4. 검증 통과! 자원 소모 및 손패에서 제거
-            p.CurrentMana -= card.CurrentCost;
-            p.Hand.Remove(card);
-
-            // 타겟팅 정보가 있다면 가져오기 (전투의 함성 등용)
-            GameEntity? target = null;
-            if(action.targetEntityId > 0) _allEntities.TryGetValue(action.targetEntityId, out target);
-
-            GameEntity? sourceEntity = null;
-
-            // 5. 실제 소환 (배열에 할당)
-            if (isUnit && targetZone != null)
-            {
-                int eid = _nextGlobalEntityId++; // 고유 ID 발급 (100, 101...)
-                sourceEntity = new GameEntity(eid, card, senderUid);
-
-                // [핵심] 하수인 객체에 위치 정보 저장
-                sourceEntity.Position = spawnPos;
+                // 5. 실제 개체(Entity) 생성 및 필드 배치
+                int eid = _nextGlobalEntityId++;
+                GameEntity sourceEntity = new GameEntity(eid, card, senderUid);
+                sourceEntity.Position = action.position;
                 sourceEntity.IsMember = isMember;
-
-                _allEntities.Add(eid, sourceEntity); // 전체 목록에 등록
                 
-                // 지정된 위치에 하수인 배치 (비어있음이 확인됨)
-                targetZone[spawnPos] = sourceEntity;
-                
-                AddPendingUpdate(sourceEntity); // 변경 사항 목록에 추가
+                _allEntities.Add(eid, sourceEntity);
+                targetZone[action.position] = sourceEntity;
+                AddPendingUpdate(sourceEntity); // 클라이언트에게 알리기 위해 추가
 
-                // 로그 출력 (□■□▣□ 형태)
-                PrintMinionSpawnLog(cardName, p.Field, p.MemberZone, isMember, spawnPos);
-            }
-            else
-            {
-                Console.WriteLine($"[GameRoom {_room.GameId}] {cardName} 사용실패");
+                // 6. '전투의 함성(ON_PLAY)' 효과 처리
+                GameEntity? battlecryTarget = null;
+                if(action.targetEntityId > 0) _allEntities.TryGetValue(action.targetEntityId, out battlecryTarget);
+                
+                await _effectProcessor.ExecuteEffectsAsync(card, sourceEntity, battlecryTarget, "ON_PLAY", senderUid);
             }
 
-            // 6. 효과 처리 (전투의 함성, 주문 효과 등)
-            // GameEffectProcessor에게 위임
-            await _effectProcessor.ExecuteEffectsAsync(card, sourceEntity, target, "ON_PLAY", senderUid);
-
-            // 7. 결과 전송 (변경된 상태를 양쪽 플레이어에게 알림)
-            // 카드 플레이어에게 "성공" 확답을 먼저 보냅니다.
-            var successMsg = new S_PlayCardSuccess { 
-                action = "PLAY_CARD_SUCCESS", 
-                serverInstanceId = card.InstanceId 
-            };
-            await _room.SendMessageToPlayerAsync(p.PlayerRef, JsonConvert.SerializeObject(successMsg));
+            // 7. 결과 성공 통보 및 필드 상태 브로드캐스트
+            await _room.SendMessageToPlayerAsync(p.PlayerRef, JsonConvert.SerializeObject(new S_PlayCardSuccess { action = "PLAY_CARD_SUCCESS", serverInstanceId = card.InstanceId }));
             await BroadcastUpdatesAsync(senderUid);
             
-            // 상대방에게는 "상대가 카드를 냈다"는 별도 메시지 전송 (애니메이션 등 용도)
-            var oppMsg = new S_OpponentPlayCard 
-            { 
-                action="OPPONENT_PLAY_CARD", 
-                cardPlayed=card.ToCardInfo(), 
-                targetEntityId=action.targetEntityId 
-            };
-            await _room.SendMessageToPlayerAsync(op.PlayerRef, JsonConvert.SerializeObject(oppMsg));
-
-            // 8. 사망 처리 (혹시 전투의 함성으로 누가 죽었으면 처리)
+            // 상대방에게는 '누가 어떤 카드를 냈다'는 연출용 메시지 전송
+            await _room.SendMessageToPlayerAsync(op.PlayerRef, JsonConvert.SerializeObject(new S_OpponentPlayCard { action="OPPONENT_PLAY_CARD", cardPlayed=card.ToCardInfo(), targetEntityId=action.targetEntityId }));
+            
+            // 8. 카드 효과 등으로 인해 죽은 개체가 있는지 확인
             await ProcessDeathsAsync();
         }
 
-        // --- 유틸리티 및 헬퍼 함수들 ---
-
-        // 카드 내기 실패 시 클라이언트에게 알리는 함수
-        private async Task SendPlayCardFail(PlayerState p, string cardId, string reason)
-        {
-             var failMsg = new S_PlayCardFail { action="PLAY_CARD_FAIL", failedCardInstanceId=cardId, reason=reason };
-             await _room.SendMessageToPlayerAsync(p.PlayerRef, JsonConvert.SerializeObject(failMsg));
-        }
-
-        // 하수인 소환 상태를 콘솔에 예쁘게 찍어주는 함수
-        private void PrintMinionSpawnLog(string cardName, GameEntity?[] field, GameEntity?[] memberZone, bool isMember, int spawnIndex)
-        {
-            StringBuilder sb = new StringBuilder();
-            sb.Append($"[GameRoom {_room.GameId}] {cardName} 소환 ");
-
-            // 일반 필드 (5칸)
-            for (int i = 0; i < field.Length; i++)
-            {
-                if (!isMember && i == spawnIndex) sb.Append("▣"); // 방금 소환된 위치
-                else if (field[i] != null) sb.Append("■"); // 기존 하수인
-                else sb.Append("□"); // 빈칸
-            }
-
-            sb.Append(" "); // 구분 공백
-
-            // 멤버 존 (1칸)
-            if (memberZone.Length > 0)
-            {
-                if (isMember && spawnIndex == 0) sb.Append("▣");
-                else if (memberZone[0] != null) sb.Append("■");
-                else sb.Append("□");
-            }
-
-            Console.WriteLine(sb.ToString());
-        }
-
-        // 1. [핸들러] 클라이언트의 공격 요청 처리 (엄격한 검증 필요)
+        /// <summary>
+        /// 한 유닛이 다른 유닛을 공격하는 로직을 검증하고 실행합니다.
+        /// </summary>
         private async Task ProcessAttackAsync(string senderUid, C_Attack action)
         {
-            Console.WriteLine($"[GameRoom {_room.GameId}] 공격 요청 수신 (from {senderUid})");
+            // 공격자와 방어자가 유효한지 확인
+            if(!_allEntities.TryGetValue(action.attackerEntityId, out var att) || !_allEntities.TryGetValue(action.defenderEntityId, out var def)) return;
             
-            // 1. 공격자, 방어자 존재 확인
-            if(!_allEntities.TryGetValue(action.attackerEntityId, out var att) || 
-               !_allEntities.TryGetValue(action.defenderEntityId, out var def)) 
-            {
-                Console.WriteLine(">> 존재하지 않는 엔티티 ID입니다.");
-                return;
-            }
+            // 공격 권한(내 것인지) 및 공격 가능 상태 확인
+            if(att.OwnerUid != senderUid || !att.CanAttack || att.HasAttacked) return;
 
-            // 2. ★ 권한 검증 (내 하수인이 맞는지, 공격 가능한지 등)
-            if(att.OwnerUid != senderUid) {
-                Console.WriteLine($">> 권한 없음: {senderUid}가 {att.OwnerUid}의 유닛으로 공격 시도.");
-                return;
-            }
-            if(!att.CanAttack || att.HasAttacked) {
-                Console.WriteLine(">> 공격 불가 상태입니다.");
-                return;
-            }
-
-            // 검증 통과 시 공격 기회 소모
+            // 공격 기회 소모 및 실제 전투 계산
             att.HasAttacked = true;
-
-            // 3. 실제 전투 로직 호출
             await ResolveCombatAsync(att, def);
-
-            // 4. 상태 브로드캐스트 및 사망 처리
+            
+            // 결과 브로드캐스트 및 사망 처리
             await BroadcastUpdatesAsync(senderUid);
             await ProcessDeathsAsync();
         }
 
-        // 2. [내부 로직] 실제 전투 계산 및 적용 (검증 없이 강제 실행 가능)
-        // 카드 효과로 인한 "강제 공격"은 이 함수를 직접 호출하면 됨.
+        /// <summary>
+        /// 실제 전투 데미지를 상호 교환합니다.
+        /// </summary>
         public async Task ResolveCombatAsync(GameEntity att, GameEntity def)
         {
             _pendingUpdates.Clear();
-
-            // 1. 데미지 계산
-            int dmgToDef = att.Attack;
-            int dmgToAtt = def.Attack;
-            
-            PlayerState p = GetPlayerState(att.OwnerUid);
-
-            // '멤버' 특성: 공격력 상관없이 무조건 1 피해만 받음 (예시 규칙)
-            if (att.Tribe == "멤버") dmgToDef = 1;
-            if (def.Tribe == "멤버") dmgToAtt = 1;
-            
-            // 영웅이 공격하는 경우 (무기 공격력 등 로직 필요, 여기선 상대 공격력만큼 피해)
-            if (att.EntityId == p.Leader.EntityId) dmgToAtt = def.Attack; 
-
-            // [LOG] 전투 시작 정보 출력
-            string attName = att.SourceCard.CardId; 
-            string defName = def.SourceCard.CardId;
-            Console.WriteLine($"[Battle] ⚔️ 전투 발생: {attName}(ID:{att.EntityId}) ➔ {defName}(ID:{def.EntityId})");
-            Console.WriteLine($"   >> 예상 데미지: 방어자에게 {dmgToDef}, 공격자에게 {dmgToAtt}");
-
-            // 2. 피해 적용
-            ApplyDamage(def, dmgToDef);
-            ApplyDamage(att, dmgToAtt);
-
-            // [LOG] 전투 결과 정보 출력
-            Console.WriteLine($"   >> 전투 결과: 공격자 HP {att.Health}, 방어자 HP {def.Health}");
-
-            // (주의) Broadcast와 Death 처리는 호출자가 담당하거나, 
-            // 여기서 하려면 'await'가 끝까지 이어져야 함.
-            // 일단 구조상 계산 후 값만 변경하고, 호출자(ProcessAttackAsync)가 전송함.
+            // 서로의 공격력만큼 체력 차감
+            ApplyDamage(def, att.Attack);
+            ApplyDamage(att, def.Attack);
         }
 
-        // 데미지 적용 함수
+        /// <summary>
+        /// 특정 개체에 데미지를 입히고 업데이트 목록에 추가합니다.
+        /// </summary>
         public void ApplyDamage(GameEntity target, int amount)
         {
             target.Health -= amount;
-            AddPendingUpdate(target); // 변경된 놈 목록에 추가
-        }
-
-        // 힐 적용 함수
-        public void ApplyHeal(GameEntity target, int amount)
-        {
-            target.Health = Math.Min(target.Health + amount, target.MaxHealth);
             AddPendingUpdate(target);
         }
 
-        // 버프 적용 함수
-        public void ApplyBuff(GameEntity target, int attackBuff, int healthBuff)
-        {
-            target.Attack += attackBuff;
-            target.Health += healthBuff;
-            target.MaxHealth += healthBuff; 
-            AddPendingUpdate(target);
-        }
-
-        // [사망 처리] 체력이 0 이하인 개체를 찾아 제거
+        /// <summary>
+        /// 필드 위 모든 개체의 체력을 확인하여 0 이하인 개체를 제거하고 '죽음의 메아리'를 처리합니다.
+        /// </summary>
+        /// <returns>사망자가 발생했으면 true</returns>
         private async Task<bool> ProcessDeathsAsync()
         {
             if(_isGameOver) return true;
             _pendingUpdates.Clear();
 
-            // 죽은 녀석들 찾기
+            // 1. 죽은 개체들 필터링
             var deadEntities = _allEntities.Values.Where(e => e.Health <= 0).ToList();
-            if (deadEntities.Count == 0) return false; // 죽은 놈 없으면 종료
+            if (deadEntities.Count == 0) return false;
 
             foreach (var dead in deadEntities)
             {
-                Console.WriteLine($"[Death] {dead.EntityId} 사망.");
-
-                // '죽음의 메아리' 효과 처리
+                // 2. '죽음의 메아리(ON_DEATH)' 효과 실행
                 await _effectProcessor.ExecuteEffectsAsync(dead.SourceCard, dead, null, "ON_DEATH", dead.OwnerUid);
-
-                // 전체 목록에서 제거
+                
+                // 3. 서버 데이터 저장소에서 제거
                 _allEntities.Remove(dead.EntityId);
                 
+                // 4. 소유 플레이어의 필드/멤버존 슬롯 비우기
                 PlayerState owner = GetPlayerState(dead.OwnerUid);
-                
-                // (수정) 배열을 순회하여 해당 하수인을 찾아 null로 만듦 (칸 비우기)
-                for(int i=0; i<owner.Field.Length; i++) {
-                    if (owner.Field[i] == dead) { owner.Field[i] = null; break; }
-                }
-                for(int i=0; i<owner.MemberZone.Length; i++) {
-                    if (owner.MemberZone[i] == dead) { owner.MemberZone[i] = null; break; }
-                }
+                for(int i=0; i<owner.Field.Length; i++) if (owner.Field[i] == dead) owner.Field[i] = null;
+                for(int i=0; i<owner.MemberZone.Length; i++) if (owner.MemberZone[i] == dead) owner.MemberZone[i] = null;
 
-                // 클라이언트에게 "얘 죽었어"라고 알림 (체력 0)
+                // 5. 클라이언트에 알릴 데이터 구성 (체력 0 상태)
                 var dData = dead.ToEntityData();
                 dData.health = 0; 
                 _pendingUpdates.Add(dData);
             }
 
-            // 사망 정보 전송
+            // 6. 사망 정보 즉시 전송
             await BroadcastUpdatesAsync(_playerA.Uid); 
-
-            // 게임 종료 조건 확인 (영웅 사망)
+            
+            // 7. 게임 종료 조건 확인 (영웅 사망 시)
             if (_playerA.Leader.Health <= 0 || _playerB.Leader.Health <= 0)
             {
                 string winner = _playerA.Leader.Health > 0 ? _playerA.Uid : _playerB.Uid;
@@ -868,40 +752,42 @@ namespace GameServer
                 return true;
             }
 
-            // 죽음의 메아리로 인해 또 누군가 죽었을 수 있으므로 재귀 호출
-            if (_allEntities.Values.Any(e => e.Health <= 0))
-            {
-                return await ProcessDeathsAsync();
-            }
-            return false;
+            // 8. 죽음의 메아리로 인해 연쇄적으로 죽은 개체가 있을 수 있으므로 재귀 호출
+            return await ProcessDeathsAsync();
         }
 
-        // 변경 목록에 추가하는 헬퍼 함수
+        /// <summary>
+        /// 상태가 변경된 개체를 전송 대기 목록에 추가합니다. (중복 방지)
+        /// </summary>
         private void AddPendingUpdate(GameEntity entity)
         {
             var existing = _pendingUpdates.FirstOrDefault(e => e.entityId == entity.EntityId);
-            if (existing != null)
-            {
-                // 이미 목록에 있으면 최신 값으로 덮어쓰기
-                existing.health = entity.Health;
-                existing.attack = entity.Attack;
-                existing.maxHealth = entity.MaxHealth;
+            if (existing != null) 
+            { 
+                existing.health = entity.Health; 
+                existing.attack = entity.Attack; 
             }
-            else
+            else 
             {
                 _pendingUpdates.Add(entity.ToEntityData());
             }
         }
         
-        // UID로 PlayerState 가져오기 (opp=true면 상대방 가져오기)
-        public PlayerState GetPlayerState(string uid, bool opp=false) => (opp ? (uid==_playerA.Uid?_playerB:_playerA) : (uid==_playerA.Uid?_playerA:_playerB));
+        /// <summary>
+        /// UID를 통해 플레이어 상태 객체를 가져옵니다.
+        /// </summary>
+        /// <param name="opp">true일 경우 상대방의 상태를 반환</param>
+        public PlayerState GetPlayerState(string uid, bool opp=false) => 
+            (opp ? (uid==_playerA.Uid?_playerB:_playerA) : (uid==_playerA.Uid?_playerA:_playerB));
         
-        // [상태 전송] 변경된 모든 개체 정보를 클라이언트에게 보냄
+        /// <summary>
+        /// 이번 액션으로 변경된 모든 게임 상태 정보를 양쪽 클라이언트에 동기화합니다.
+        /// </summary>
         private async Task BroadcastUpdatesAsync(string triggerPlayerUid) 
         { 
              PlayerState p = GetPlayerState(triggerPlayerUid);
-
-             // 1. 엔티티(하수인/영웅) 업데이트 전송
+             
+             // 1. 변경된 엔티티(하수인/영웅) 정보 전송
              if (_pendingUpdates.Count > 0)
             {
                 string json = JsonConvert.SerializeObject(new S_UpdateEntities { action = "UPDATE_ENTITIES", updatedEntities = _pendingUpdates });
@@ -909,22 +795,17 @@ namespace GameServer
                 await _room.SendMessageToPlayerAsync(_playerB.PlayerRef, json);
                 _pendingUpdates.Clear();
             }
-             // 2. 마나 정보 갱신
-             var manaMsg = new S_UpdateMana 
-             { 
-                 action = "UPDATE_MANA", 
-                 ownerUid = p.Uid, 
-                 currentMana = p.CurrentMana, 
-                 maxMana = p.MaxMana 
-             };
+
+             // 2. 현재 행동한 플레이어의 마나 정보 갱신 전송
+             var manaMsg = new S_UpdateMana { action = "UPDATE_MANA", ownerUid = p.Uid, currentMana = p.CurrentMana, maxMana = p.MaxMana };
              string manaJson = JsonConvert.SerializeObject(manaMsg);
-             
              await _room.SendMessageToPlayerAsync(_playerA.PlayerRef, manaJson);
              await _room.SendMessageToPlayerAsync(_playerB.PlayerRef, manaJson);
-                
         }
 
-        // 게임 종료 처리
+        /// <summary>
+        /// 게임 승패가 결정되었을 때 호출되어 결과를 전송하고 세션을 정리합니다.
+        /// </summary>
         private async Task EndGameAsync(string winner, string reason)
         {
             if(_isGameOver) return;

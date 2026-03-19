@@ -135,6 +135,19 @@ namespace GameServer
     }
 
     /// <summary>
+    /// (S->C) 상대방이 멀리건을 확정했을 때 알립니다.
+    /// 어떤 슬롯(인덱스)의 카드를 교체했는지 정보를 포함합니다.
+    /// </summary>
+    public class S_OpponentMulliganStatus : BaseGameAction
+    {
+        // action = "OPPONENT_MULLIGAN_STATUS"
+        public string? opponentUid;
+        public List<int>? replacedIndices; // 교체된 카드의 슬롯 번호 (0~4)
+        public int replacedCount;          // 교체된 카드 수
+        public bool isReady;               // 멀리건 완료 여부
+    }
+
+    /// <summary>
     /// (S->C) 멀리건 종료 후, 게임의 최종 상태와 함께 시작을 알립니다.
     /// </summary>
     public class S_GameReady : BaseGameAction
