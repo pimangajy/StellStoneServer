@@ -31,6 +31,7 @@ namespace GameServer
                 if (string.IsNullOrEmpty(token) || string.IsNullOrEmpty(gameId))
                 {
                     Console.WriteLine($"[WS {connectionId}] ❌ 인증 실패: 'token' 또는 'gameId'가 URL 쿼리에 없습니다.");
+                    Console.WriteLine($"토큰 값: {token}, 게임 아이디 값: {gameId}");
                     // (중요) 인증 실패 시, 클라이언트에게 사유를 알리고 연결을 즉시 종료합니다.
                     await webSocket.CloseAsync(
                         WebSocketCloseStatus.PolicyViolation, // 1008: 정책 위반

@@ -83,24 +83,34 @@ namespace GameServer
             // 콘솔 출력 시 한글 깨짐 방지를 위해 인코딩을 UTF-8로 설정
             Console.OutputEncoding = System.Text.Encoding.UTF8;
 
+            var builder = WebApplication.CreateBuilder(args);
+
+            // --- appsettings.json에서 Firebase 설정 읽기 ---
+            var firebaseConfig = builder.Configuration.GetSection("Firebase");
+            string? projectId = firebaseConfig["ProjectId"];
+            string? credentialPath = firebaseConfig["CredentialPath"];
+
+            if (string.IsNullOrEmpty(projectId) || string.IsNullOrEmpty(credentialPath))
+            {
+                Console.WriteLine("❌ Firebase 설정(ProjectId, CredentialPath)이 appsettings.json에 없습니다.");
+                return; // 설정이 없으면 애플리케이션을 시작하지 않습니다.
+            }
+
+            // --- Google Credential 객체 생성 (파일을 한 번만 읽도록 개선) ---
+            var credential = GoogleCredential.FromFile(credentialPath);
+
             // --- Firebase Admin SDK 초기화 (Authentication, Firestore 등) ---
-            string credentialPath = "membership-management-17941-firebase-adminsdk-fbsvc-cc2562440d.json";
             FirebaseApp.Create(new AppOptions()
             {
-                Credential = GoogleCredential.FromFile(credentialPath),
+                Credential = credential,
             });
-
-            var builder = WebApplication.CreateBuilder(args);
 
             // --- 의존성 주입(Dependency Injection) 설정 ---
             // FirestoreDb 인스턴스를 싱글턴(Singleton)으로 등록하여 애플리케이션 전체에서 공유합니다.
-            string projectId = "membership-management-17941";
-            
-            // FirestoreDb 객체를 미리 생성
             FirestoreDb firestoreDb = new FirestoreDbBuilder
             {
                 ProjectId = projectId,
-                Credential = GoogleCredential.FromFile(credentialPath)
+                Credential = credential
             }.Build();
 
             builder.Services.AddSingleton(firestoreDb);
@@ -115,10 +125,6 @@ namespace GameServer
 
             // --- HTTP 서버 기본 설정 ---
             // 기본적으로 http://localhost:5000, https://localhost:5001 에서 실행됩니다.
-            // URL은 launchSettings.json 파일에서 변경할 수 있습니다.
-            app.Urls.Add("http://*:5123"); // 사용할 포트 지정 (예: 5123)
-                                                   // app.Run() 직전에 로그를 남기는 것이 더 정확합니다.
-                                                   // Console.WriteLine("✅ HTTP 서버가 시작됩니다. Listening on http://localhost:5123");
 
             // --- API 엔드포인트(Endpoint) 정의 ---
 
