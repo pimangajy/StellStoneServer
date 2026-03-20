@@ -337,39 +337,23 @@ namespace GameServer
             BaseGameAction? baseAction = null;
             try { baseAction = JsonConvert.DeserializeObject<BaseGameAction>(messageJson); } catch { return; }
             if (baseAction == null) return;
-
-            // --- 봇 제어 및 권한 확인 로직 ---
-            // 테스트 환경 지원: 봇의 턴일 때 유저가 보낸 명령을 봇의 명령으로 승인함
             
             if (_currentPhase == "Mulligan")
             {
                 // 멀리건 페이즈: 턴에 관계없이 각자 전송 가능
                 PlayerState currentPlayer = GetPlayerState(_currentTurnPlayerUid);
                 
-                // 보낸 사람이 현재 활성 플레이어가 아니지만, 그 플레이어가 봇인 경우 (대리 전송 허용)
-                if (senderUid != _currentTurnPlayerUid && currentPlayer.PlayerRef.IsBot)
-                {
-                    await DispatchActionAsync(_currentTurnPlayerUid, baseAction.action!, messageJson);
-                }
-                else
-                {
-                    await DispatchActionAsync(senderUid, baseAction.action!, messageJson);
-                }
+                await DispatchActionAsync(senderUid, baseAction.action!, messageJson);
+                
             }
             else
             {
                 // 메인 게임 중: 턴 주인인지 확인
                 PlayerState turnOwner = GetPlayerState(_currentTurnPlayerUid);
-                if (turnOwner.PlayerRef.IsBot)
-                {
-                    // 봇의 턴이면 유저의 패킷을 봇의 권한으로 실행
-                    await DispatchActionAsync(_currentTurnPlayerUid, baseAction.action!, messageJson);
-                }
-                else
-                {
-                    // 유저의 턴이면 보낸 사람 본인의 UID로 실행
-                    await DispatchActionAsync(senderUid, baseAction.action!, messageJson);
-                }
+
+                // 유저의 턴이면 보낸 사람 본인의 UID로 실행
+                await DispatchActionAsync(senderUid, baseAction.action!, messageJson);
+                
             }
         }
 
@@ -451,7 +435,7 @@ namespace GameServer
         /// <summary>
         /// 플레이어가 멀리건에서 교체할 카드를 선택했을 때 이를 처리합니다.
         /// </summary>
-        private async Task ProcessMulliganDecisionAsync(string senderUid, C_MulliganDecision action)
+        public async Task ProcessMulliganDecisionAsync(string senderUid, C_MulliganDecision action)
         {
             PlayerState player = GetPlayerState(senderUid);
             PlayerState opponent = GetPlayerState(senderUid, true);
@@ -578,6 +562,16 @@ namespace GameServer
             foreach(var e in p.Field) { if(e!=null) { e.HasAttacked = false; e.CanAttack = true; } }
             foreach(var e in p.MemberZone) { if(e!=null) { e.HasAttacked = false; e.CanAttack = true; } }
             p.Leader.CanAttack = true; p.Leader.HasAttacked = false;
+
+            // 🤖 봇의 턴이라면 BotAI 실행
+            if (p.PlayerRef.IsBot)
+            {
+                _ = Task.Run(async () => {
+                    // BotAI 클래스가 별도로 구현되어 있다고 가정
+                    BotAI ai = new BotAI(this, uid);
+                    await ai.ExecuteTurnAsync();
+                });
+            }
         }
 
         /// <summary>
@@ -594,7 +588,7 @@ namespace GameServer
         /// <summary>
         /// 플레이어가 턴 종료 버튼을 눌렀을 때의 처리입니다.
         /// </summary>
-        private async Task ProcessEndTurnAsync(string senderUid)
+        public async Task ProcessEndTurnAsync(string senderUid)
         {
             if (senderUid != _currentTurnPlayerUid) return; // 내 턴이 아니면 무시
             
@@ -617,7 +611,7 @@ namespace GameServer
         /// <summary>
         /// 손에 있는 카드를 필드에 내거나 사용하는 로직입니다.
         /// </summary>
-        private async Task ProcessPlayCardAsync(string senderUid, C_PlayCard action)
+        public async Task ProcessPlayCardAsync(string senderUid, C_PlayCard action)
         {
             PlayerState p = GetPlayerState(senderUid);
             PlayerState op = GetPlayerState(senderUid, true);
@@ -672,7 +666,7 @@ namespace GameServer
         /// <summary>
         /// 한 유닛이 다른 유닛을 공격하는 로직을 검증하고 실행합니다.
         /// </summary>
-        private async Task ProcessAttackAsync(string senderUid, C_Attack action)
+        public async Task ProcessAttackAsync(string senderUid, C_Attack action)
         {
             // 공격자와 방어자가 유효한지 확인
             if(!_allEntities.TryGetValue(action.attackerEntityId, out var att) || !_allEntities.TryGetValue(action.defenderEntityId, out var def)) return;
