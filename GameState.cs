@@ -400,7 +400,7 @@ namespace GameServer
             Console.WriteLine($"[GameState] 멀리건 페이즈 시작.");
             _currentPhase = "Mulligan";
             
-            // 1. 선공/후공 무작위 결정
+            // 1. 선공 결정
             if (Rng.Next(2) == 0) { _firstPlayerUid = _playerA.Uid; _secondPlayerUid = _playerB.Uid; }
             else { _firstPlayerUid = _playerB.Uid; _secondPlayerUid = _playerA.Uid; }
             _currentTurnPlayerUid = _firstPlayerUid; 
@@ -409,27 +409,28 @@ namespace GameServer
             _playerA.ShuffleDeck(Rng);
             _playerB.ShuffleDeck(Rng);
 
-            // 3. 시작 카드 5장씩 뽑기
-            List<CardInfo> handA = new List<CardInfo>();
-            List<CardInfo> handB = new List<CardInfo>();
+            // 3. 시작 손패 구성 (중복 방지 체크 포함)
+            List<CardInfo> handA = _playerA.Hand.Count == 0 ? DrawInitialHand(_playerA) : _playerA.Hand.Select(c => c.ToCardInfo()).ToList();
+            List<CardInfo> handB = _playerB.Hand.Count == 0 ? DrawInitialHand(_playerB) : _playerB.Hand.Select(c => c.ToCardInfo()).ToList();
 
-            for (int i = 0; i < 5; i++)
-            {
-                var cardA = _playerA.DrawCard();
-                if (cardA != null) handA.Add(cardA.ToCardInfo());
-                var cardB = _playerB.DrawCard();
-                if (cardB != null) handB.Add(cardB.ToCardInfo());
+            // 4. 정보 전송 (로컬 함수 사용으로 가독성 개선)
+            async Task SendInfo(PlayerState p, List<CardInfo> hand) {
+                long endTime = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 30;
+                var msg = new S_MulliganInfo { action = "MULLIGAN_INFO", cardsToMulligan = hand, mulliganEndTime = endTime };
+                await _room.SendMessageToPlayerAsync(p.PlayerRef, JsonConvert.SerializeObject(msg));
             }
 
-            // 4. 클라이언트에 멀리건 정보 전송 (30초 제한시간 부여)
-            long endTime = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 30;
-            var msgA = new S_MulliganInfo { action = "MULLIGAN_INFO", cardsToMulligan = handA, mulliganEndTime = endTime };
-            var msgB = new S_MulliganInfo { action = "MULLIGAN_INFO", cardsToMulligan = handB, mulliganEndTime = endTime };
+            await SendInfo(_playerA, handA);
+            await SendInfo(_playerB, handB);
 
-            await _room.SendMessageToPlayerAsync(_playerA.PlayerRef, JsonConvert.SerializeObject(msgA));
-            await _room.SendMessageToPlayerAsync(_playerB.PlayerRef, JsonConvert.SerializeObject(msgB));
+            // 🤖 봇이 있다면 BotAI에게 멀리건 의사결정을 위임
+            if (_playerA.PlayerRef.IsBot) _ = Task.Run(async () => await new BotAI(this, _playerA.Uid).ExecuteMulliganAsync());
+            if (_playerB.PlayerRef.IsBot) _ = Task.Run(async () => await new BotAI(this, _playerB.Uid).ExecuteMulliganAsync());
+        }
 
-            // [봇 자동화 제거] 이제 클라이언트 측 테스트 로직이 봇의 결정을 서버로 보내야 합니다.
+        private List<CardInfo> DrawInitialHand(PlayerState p) {
+            for (int i = 0; i < 5; i++) p.DrawCard();
+            return p.Hand.Select(c => c.ToCardInfo()).ToList();
         }
         
         /// <summary>
@@ -702,6 +703,21 @@ namespace GameServer
             target.Health -= amount;
             AddPendingUpdate(target);
         }
+        public void ApplyHeal(GameEntity target, int amount)
+        {
+            int oldHealth = target.Health;
+            target.Health = Math.Min(target.Health + amount, target.MaxHealth);
+            Console.WriteLine($"[GameState] {target.EntityId} 회복 {amount}");
+            AddPendingUpdate(target);
+        }
+
+        public void ApplyBuff(GameEntity target, int attackBuff, int healthBuff)
+        {
+            target.Attack += attackBuff;
+            target.Health += healthBuff;
+            target.MaxHealth += healthBuff; 
+            AddPendingUpdate(target);
+        }
 
         /// <summary>
         /// 필드 위 모든 개체의 체력을 확인하여 0 이하인 개체를 제거하고 '죽음의 메아리'를 처리합니다.
@@ -809,5 +825,35 @@ namespace GameServer
             await _room.SendMessageToPlayerAsync(_playerA.PlayerRef, json);
             await _room.SendMessageToPlayerAsync(_playerB.PlayerRef, json);
         }
+
+        // 대시보드 전용
+        public class GameSnapshot
+        {
+         public string CurrentTurnPlayerUid { get; set; } = "";
+          public string CurrentPhase { get; set; } = "";
+          public int PlayerAMana { get; set; }
+           public int PlayerBMana { get; set; }
+           public int PlayerAHealth { get; set; }
+          public int PlayerBHealth { get; set; }
+          // 필요하다면 필드의 하수인 개수나 액션 로그를 추가할 수 있습니다.
+        }
+
+        // GameState 클래스 내부에 스냅샷 반환 메서드 추가
+        public GameSnapshot GetSnapshot()
+        {
+            // 스레드 안전성을 위해 lock 블록 안에서 중요 상태를 복사합니다.
+            lock (_lock)
+            {
+              return new GameSnapshot
+             {
+                    CurrentTurnPlayerUid = _currentTurnPlayerUid,
+                    CurrentPhase = _currentPhase ?? "Waiting",
+                   PlayerAMana = _playerA.CurrentMana,
+                  PlayerBMana = _playerB.CurrentMana,
+                  PlayerAHealth = _playerA.Leader?.Health ?? 0,
+                 PlayerBHealth = _playerB.Leader?.Health ?? 0
+                };
+            }
+             }
     }
 }

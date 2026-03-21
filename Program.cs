@@ -116,12 +116,25 @@ namespace GameServer
             builder.Services.AddSingleton(firestoreDb);
             Console.WriteLine("✅ Firebase Admin SDK가 성공적으로 초기화되었습니다.");
 
+            // 대시보드 전용
+            builder.Services.AddCors(options =>
+            {
+                options.AddPolicy("AllowAdminDashboard", policy =>
+                {
+                    // 테스트를 위해 모든 출처(로컬 파일 포함)의 요청을 허용합니다.
+                    policy.AllowAnyOrigin().AllowAnyMethod().AllowAnyHeader();
+                });
+            });
+
             // ==================================================================
             // (신규) 서버 시작 전 카드 데이터베이스 로드
             // ==================================================================
             await ServerCardDatabase.Instance.InitializeAsync(firestoreDb);
 
             var app = builder.Build();
+
+            // 대시보드 전용
+            app.UseCors("AllowAdminDashboard");
 
             // --- HTTP 서버 기본 설정 ---
             // 기본적으로 http://localhost:5000, https://localhost:5001 에서 실행됩니다.
@@ -206,6 +219,7 @@ namespace GameServer
                 FirestoreDb db,
                 [FromHeader(Name = "Authorization")] string authorization) =>
             {
+                Console.WriteLine("✅ 덱 목록 요청 수신");
                 // 1. 토큰 검증
                 string? uid = await VerifyTokenAsync(authorization);
                 if (uid == null)
@@ -547,6 +561,28 @@ namespace GameServer
                     Console.WriteLine("❌ 비-WebSocket 요청이 /ws/game으로 수신됨");
                     context.Response.StatusCode = StatusCodes.Status400BadRequest;
                 }
+            });
+
+            // 대시보드 전용
+            // 1. 활성화된 방 목록 API
+            app.MapGet("/api/admin/rooms", () =>
+            {
+                // 보안: 실제 환경에서는 여기에 관리자 인증 토큰 검증 로직이 들어가야 합니다.
+                var activeRooms = GameRoomManager.GetActiveRoomIds();
+                return Results.Ok(new { status = "success", count = activeRooms.Count, rooms = activeRooms });
+            });
+
+            // 2. 특정 방의 상세 상태 API
+            app.MapGet("/api/admin/rooms/{gameId}", (string gameId) =>
+            {
+             var room = GameRoomManager.GetRoom(gameId);
+             if (room == null) return Results.NotFound(new { status = "error", message = "방을 찾을 수 없습니다." });
+
+             var gameState = room.GetCurrentGameState();
+             if (gameState == null) return Results.Ok(new { status = "success", state = "대기 중 (게임 미시작)" });
+
+              var snapshot = gameState.GetSnapshot();
+             return Results.Ok(new { status = "success", data = snapshot });
             });
 
             Console.WriteLine("✅ HTTP 서버가 시작됩니다. Listening on http://*:5123");

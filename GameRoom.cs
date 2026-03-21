@@ -312,5 +312,11 @@ namespace GameServer
         {
             return _players.IsEmpty;
         }
+
+        // 대시보드 전용
+        public GameState? GetCurrentGameState()
+        {
+            return _gameState;
+        }
     }
 }

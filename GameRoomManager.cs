@@ -72,5 +72,18 @@ namespace GameServer
                 Console.WriteLine($"[GameRoomManager] ⚠️ {gameId} 방을 찾을 수 없어 연결 종료를 처리할 수 없습니다.");
             }
         }
+
+        // 대시보드 전용 스크립트
+        public static List<string> GetActiveRoomIds()
+        {
+            // ConcurrentDictionary의 Key(GameId)들만 추출하여 반환
+         return _rooms.Keys.ToList();
+        }
+
+        public static GameRoom? GetRoom(string gameId)
+        {
+         _rooms.TryGetValue(gameId, out GameRoom? room);
+         return room;
+        }
     }
 }
