@@ -187,6 +187,15 @@ namespace GameServer
         }
     }
 
+    // 로그 데이터 구조 정의
+    public class GameLogEvent
+    {
+         public DateTime Timestamp { get; set; }
+        public string Actor { get; set; } = "";     // 행동한 주체 (예: "PlayerA", "PlayerB", "System")
+        public string ActionType { get; set; } = "";// 액션 종류 (예: "PLAY_CARD", "ATTACK", "DAMAGE", "HEAL", "PHASE_CHANGE")
+        public string Message { get; set; } = "";   // 사람이 읽기 쉬운 요약 메세지 (대시보드 출력용)
+        public object? Details { get; set; }        // 구체적인 타겟 ID나 데미지 수치 등 (인게임 UI 처리용 JSON 객체)
+    }
     // ==================================================================
     // 1. PlayerState 클래스
     // ==================================================================
@@ -213,6 +222,9 @@ namespace GameServer
         public int MaxMana = 0;                             // 이번 턴의 최대 마나 한도
         
         private int _nextInstanceId = 1;                    // 카드 인스턴스 ID 발급을 위한 카운터
+
+        // PlayerState 전용 이벤트
+        public event Action<string, string>? OnCardDrawn;
 
         public PlayerState(GamePlayer player, GameEntity leader)
         {
@@ -263,8 +275,11 @@ namespace GameServer
             // 손으로 들어올 때 클라이언트와 통신할 고유 인스턴스 ID 새로 부여
             card.InstanceId = $"HandCard_{Uid}_{_nextInstanceId++}";
             Hand.Add(card);
+            // 2. 나(PlayerState) 카드 뽑았다고 소리침!
+            OnCardDrawn?.Invoke(this.Uid, card.InstanceId);
             return card;
         }
+        
     }
 
     // ==================================================================
@@ -303,6 +318,13 @@ namespace GameServer
         // 클라이언트에 한꺼번에 보낼 변경된 개체 데이터 목록
         private List<EntityData> _pendingUpdates = new List<EntityData>();
 
+        // 로그 보관 리스트
+         private List<GameLogEvent> _actionLogs = new List<GameLogEvent>();
+         // 방송국(이벤트) 설립
+        public event Action<string, string>? OnCardPlayed;    // 누가, 무슨 카드를 냈는가?
+        public event Action<string, string, int>? OnAttacked; // 누가, 누구를, 데미지 몇으로 공격했는가?
+        
+
         public GameState(GameRoom room, GamePlayer playerA, GamePlayer playerB)
         {
             _room = room;
@@ -327,6 +349,31 @@ namespace GameServer
             _mulliganDecisions[_playerB.Uid] = null;
             
             _effectProcessor = new GameEffectProcessor(this);
+
+            // Player A와 B가 "카드 뽑았다"고 소리치면, GameState가 그걸 듣고 AddLog를 실행함
+            _playerA.OnCardDrawn += (playerName, id) => {
+                AddLog(playerName, "DRAW", $"{playerName}이(가) {id}카드를 뽑았습니다.");
+            };
+
+            _playerB.OnCardDrawn += (playerName, id) => {
+                AddLog(playerName, "DRAW", $"{playerName}이(가) {id}카드를 뽑았습니다.");
+            };
+
+            // 게임이 생성될 때 로그 시스템을 이벤트에 연결(구독)시킵니다.
+            InitializeLogger(); 
+        }
+
+        private void InitializeLogger()
+        {
+            // 카드를 냈을 때 알아서 로그 작성
+            this.OnCardPlayed += (playerName, cardName) => {
+                AddLog(playerName, "PLAY_CARD", $"{playerName}이(가) [{cardName}]을(를) 사용했습니다.");
+            };
+
+            // 공격했을 때 알아서 로그 작성
+            this.OnAttacked += (attackerName, targetName, damage) => {
+                AddLog(attackerName, "ATTACK", $"{attackerName}이(가) {targetName}에게 {damage}의 피해를 입혔습니다!");
+            };
         }
 
         /// <summary>
@@ -662,6 +709,8 @@ namespace GameServer
             
             // 8. 카드 효과 등으로 인해 죽은 개체가 있는지 확인
             await ProcessDeathsAsync();
+
+            OnCardPlayed(p.Uid, card.CardId);
         }
 
         /// <summary>
@@ -678,6 +727,8 @@ namespace GameServer
             // 공격 기회 소모 및 실제 전투 계산
             att.HasAttacked = true;
             await ResolveCombatAsync(att, def);
+
+            OnAttacked(att.OwnerUid, def.OwnerUid, att.Attack);
             
             // 결과 브로드캐스트 및 사망 처리
             await BroadcastUpdatesAsync(senderUid);
@@ -835,6 +886,7 @@ namespace GameServer
            public int PlayerBMana { get; set; }
            public int PlayerAHealth { get; set; }
           public int PlayerBHealth { get; set; }
+          public List<GameLogEvent>? Logs { get; set; }
           // 필요하다면 필드의 하수인 개수나 액션 로그를 추가할 수 있습니다.
         }
 
@@ -844,16 +896,38 @@ namespace GameServer
             // 스레드 안전성을 위해 lock 블록 안에서 중요 상태를 복사합니다.
             lock (_lock)
             {
-              return new GameSnapshot
-             {
+                return new GameSnapshot
+                {
                     CurrentTurnPlayerUid = _currentTurnPlayerUid,
                     CurrentPhase = _currentPhase ?? "Waiting",
-                   PlayerAMana = _playerA.CurrentMana,
-                  PlayerBMana = _playerB.CurrentMana,
-                  PlayerAHealth = _playerA.Leader?.Health ?? 0,
-                 PlayerBHealth = _playerB.Leader?.Health ?? 0
+                    PlayerAMana = _playerA.CurrentMana,
+                    PlayerBMana = _playerB.CurrentMana,
+                    PlayerAHealth = _playerA.Leader?.Health ?? 0,
+                    PlayerBHealth = _playerB.Leader?.Health ?? 0,
+
+                    Logs = _actionLogs.ToList()
+                    // Logs = _actionLogs.TakeLast(50).ToList() // 끝에서부터 최근 50개만 잘라서 전송
                 };
             }
-             }
+        }
+
+        public void AddLog(string actor, string actionType, string message, object? details = null)
+        {
+        var newLog = new GameLogEvent
+        {
+            Timestamp = DateTime.UtcNow,
+            Actor = actor,
+            ActionType = actionType,
+            Message = message,
+            Details = details
+        };
+    
+        lock (_lock) {
+            _actionLogs.Add(newLog);
+         }
+    
+        // 이 시점에서 인게임 클라이언트(WebSocket 등)에게도 
+        // "S_NewLogEvent" 패킷을 브로드캐스팅하면 인게임 UI 좌측 로그에 즉시 표시됩니다!
+    }
     }
 }

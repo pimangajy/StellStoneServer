@@ -38,6 +38,8 @@ namespace GameServer
                 
             // 3. 서버(GameState)로 결정 전송 (유저가 패킷을 보내는 것과 동일한 효과)
             await _gameState.ProcessMulliganDecisionAsync(_botUid, new C_MulliganDecision { cardInstanceIdsToReplace = toReplace });
+        
+            Console.WriteLine("봇이 멀리건을 결정");
         }
 
         /// <summary>
@@ -47,6 +49,8 @@ namespace GameServer
         {
             var me = _gameState.GetPlayerState(_botUid);
             var opponent = _gameState.GetPlayerState(_botUid, true);
+
+            Console.WriteLine("봇의 턴 시작");
 
             // 1. 턴 시작 후 생각하는 시간 연출
             await Task.Delay(2000);
@@ -70,6 +74,7 @@ namespace GameServer
                     
                     if (pos != -1)
                     {
+                        Console.WriteLine("봇의 카드 사용");
                         // 카드 내기 액션 서버로 전송
                         await _gameState.ProcessPlayCardAsync(_botUid, new C_PlayCard {
                             handCardInstanceId = card.InstanceId,
@@ -89,6 +94,7 @@ namespace GameServer
             {
                 if (entity != null && entity.CanAttack && !entity.HasAttacked)
                 {
+                    Console.WriteLine("봇의 공격");
                     // 단순 AI: 적 하수인을 무시하고 무조건 상대 영웅(Leader) 공격 (명치 메타)
                     await _gameState.ProcessAttackAsync(_botUid, new C_Attack {
                         attackerEntityId = entity.EntityId,

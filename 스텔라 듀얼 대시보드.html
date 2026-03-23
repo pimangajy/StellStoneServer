@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>스텔라 듀얼 - 서버 관제 대시보드</title>
+    <!-- Tailwind CSS (디자인을 위해 CDN 사용) -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* 커스텀 스크롤바 */
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #1f2937; }
+        ::-webkit-scrollbar-thumb { background: #4b5563; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #6b7280; }
+        .glass-panel { background: rgba(31, 41, 55, 0.7); backdrop-filter: blur(10px); }
+    </style>
+</head>
+<body class="bg-gray-900 text-gray-100 font-sans antialiased h-screen overflow-hidden flex flex-col">
+
+    <!-- 상단 네비게이션 바 -->
+    <header class="bg-gray-800 border-b border-gray-700 px-6 py-4 flex justify-between items-center shadow-md z-10">
+        <div class="flex items-center gap-3">
+            <div class="w-8 h-8 rounded-full bg-blue-500 flex items-center justify-center font-bold text-white shadow-[0_0_15px_rgba(59,130,246,0.5)]">SD</div>
+            <h1 class="text-xl font-bold tracking-wider text-white">STELLAR DUEL <span class="text-blue-400 font-medium text-sm ml-2">ADMIN CONSOLE</span></h1>
+        </div>
+        <div class="flex items-center gap-4">
+            <div class="flex items-center gap-2">
+                <span class="text-sm text-gray-400">서버 주소:</span>
+                <input type="text" id="serverUrl" value="http://localhost:5123" class="bg-gray-900 border border-gray-700 rounded px-3 py-1 text-sm focus:outline-none focus:border-blue-500 text-gray-300 w-64" placeholder="http://localhost:5123">
+            </div>
+            <div id="connectionStatus" class="flex items-center gap-2 text-sm text-yellow-400 font-medium bg-gray-900 px-3 py-1 rounded border border-gray-700">
+                <span class="relative flex h-3 w-3">
+                  <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-yellow-400 opacity-75"></span>
+                  <span class="relative inline-flex rounded-full h-3 w-3 bg-yellow-500"></span>
+                </span>
+                대기 중
+            </div>
+        </div>
+    </header>
+
+    <!-- 메인 레이아웃 -->
+    <div class="flex flex-1 overflow-hidden">
+        
+        <!-- 왼쪽: 방 목록 사이드바 -->
+        <aside class="w-80 bg-gray-800 border-r border-gray-700 flex flex-col">
+            <div class="p-4 border-b border-gray-700 flex justify-between items-center bg-gray-800/50">
+                <h2 class="font-semibold text-gray-200 flex items-center gap-2">
+                    📡 활성화된 게임 방 <span id="roomCount" class="bg-blue-600 text-white text-xs px-2 py-0.5 rounded-full">0</span>
+                </h2>
+                <button onclick="fetchRooms()" class="text-gray-400 hover:text-white transition-colors" title="수동 새로고침">
+                    🔄
+                </button>
+            </div>
+            <div id="roomList" class="flex-1 overflow-y-auto p-2 space-y-1">
+                <!-- 방 목록이 동적으로 여기에 추가됩니다 -->
+                <div class="text-center text-gray-500 mt-10 text-sm">로딩 중...</div>
+            </div>
+        </aside>
+
+        <!-- 오른쪽: 선택된 방의 상세 상태 -->
+        <main class="flex-1 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-gray-800 via-gray-900 to-black p-8 overflow-y-auto relative">
+            <div id="noRoomSelected" class="absolute inset-0 flex flex-col items-center justify-center text-gray-500">
+                <div class="text-6xl mb-4 opacity-20">🌌</div>
+                <h2 class="text-xl font-medium">관측할 방을 선택해주세요</h2>
+                <p class="text-sm mt-2">왼쪽 목록에서 방을 클릭하면 실시간 상태를 볼 수 있습니다.</p>
+            </div>
+
+            <div id="roomDetails" class="hidden max-w-5xl mx-auto space-y-6 relative z-10">
+                
+                <!-- 방 제목 및 페이즈 정보 -->
+                <div class="glass-panel p-6 rounded-xl border border-gray-700 shadow-xl flex justify-between items-center">
+                    <div>
+                        <h2 class="text-2xl font-bold text-white mb-1" id="displayRoomId">Room: -</h2>
+                        <p class="text-sm text-gray-400 flex items-center gap-2">
+                            <span class="w-2 h-2 rounded-full bg-green-500"></span> 실시간 동기화 중 (1초 주기)
+                        </p>
+                    </div>
+                    <div class="text-right">
+                        <div class="text-sm text-gray-400 mb-1">현재 페이즈</div>
+                        <div id="displayPhase" class="text-3xl font-black text-blue-400 tracking-wider">WAITING</div>
+                    </div>
+                </div>
+
+                <!-- 플레이어 상태 비교 보드 -->
+                <div class="grid grid-cols-2 gap-8 mt-8">
+                    
+                    <!-- 플레이어 A -->
+                    <div class="glass-panel rounded-xl border-t-4 border-t-red-500 border-x border-b border-gray-700 p-6 relative overflow-hidden">
+                        <div id="turnIndicatorA" class="hidden absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-red-500 to-transparent animate-pulse"></div>
+                        <h3 class="text-xl font-bold text-gray-200 mb-4 flex justify-between items-center">
+                            <span>🔴 플레이어 A</span>
+                            <span id="turnTagA" class="hidden bg-red-500/20 text-red-400 text-xs px-2 py-1 rounded border border-red-500/30">현재 턴</span>
+                        </h3>
+                        
+                        <div class="space-y-4">
+                            <div class="bg-gray-800/80 rounded-lg p-4 border border-gray-700 flex justify-between items-center">
+                                <span class="text-gray-400 text-sm">체력 (Health)</span>
+                                <div class="flex items-center gap-2">
+                                    <span class="text-2xl font-bold text-red-400" id="displayHealthA">0</span>
+                                    <span class="text-red-500/50">❤️</span>
+                                </div>
+                            </div>
+                            <div class="bg-gray-800/80 rounded-lg p-4 border border-gray-700 flex justify-between items-center">
+                                <span class="text-gray-400 text-sm">마나 (Mana)</span>
+                                <div class="flex items-center gap-2">
+                                    <span class="text-2xl font-bold text-blue-400" id="displayManaA">0</span>
+                                    <span class="text-blue-500/50">🔷</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 플레이어 B -->
+                    <div class="glass-panel rounded-xl border-t-4 border-t-blue-500 border-x border-b border-gray-700 p-6 relative overflow-hidden">
+                        <div id="turnIndicatorB" class="hidden absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-blue-500 to-transparent animate-pulse"></div>
+                        <h3 class="text-xl font-bold text-gray-200 mb-4 flex justify-between items-center">
+                            <span>🔵 플레이어 B</span>
+                            <span id="turnTagB" class="hidden bg-blue-500/20 text-blue-400 text-xs px-2 py-1 rounded border border-blue-500/30">현재 턴</span>
+                        </h3>
+                        
+                        <div class="space-y-4">
+                            <div class="bg-gray-800/80 rounded-lg p-4 border border-gray-700 flex justify-between items-center">
+                                <span class="text-gray-400 text-sm">체력 (Health)</span>
+                                <div class="flex items-center gap-2">
+                                    <span class="text-2xl font-bold text-red-400" id="displayHealthB">0</span>
+                                    <span class="text-red-500/50">❤️</span>
+                                </div>
+                            </div>
+                            <div class="bg-gray-800/80 rounded-lg p-4 border border-gray-700 flex justify-between items-center">
+                                <span class="text-gray-400 text-sm">마나 (Mana)</span>
+                                <div class="flex items-center gap-2">
+                                    <span class="text-2xl font-bold text-blue-400" id="displayManaB">0</span>
+                                    <span class="text-blue-500/50">🔷</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                </div>
+
+                <!-- 실시간 액션 로그 패널 추가 -->
+                <div class="glass-panel p-6 rounded-xl border border-gray-700 shadow-xl mt-8">
+                    <h3 class="text-xl font-bold text-gray-200 mb-4 flex items-center gap-2">
+                        <span>📜 실시간 액션 로그</span>
+                        <span class="text-xs bg-gray-800 text-gray-400 px-2 py-1 rounded border border-gray-600">서버 검증 기록</span>
+                    </h3>
+                    <div id="logContainer" class="bg-[#0f172a] border border-gray-700 rounded-lg p-4 h-64 overflow-y-auto space-y-2 font-mono text-sm relative">
+                        <!-- 로그 아이템들이 여기에 들어갑니다 -->
+                        <div class="absolute inset-0 flex items-center justify-center text-gray-500">로그 대기 중...</div>
+                    </div>
+                </div>
+
+            </div>
+        </main>
+    </div>
+
+    <!-- 로직 자바스크립트 -->
+    <script>
+        let currentSelectedRoomId = null;
+        let roomDetailInterval = null;
+        let roomListInterval = null;
+
+        const uiElements = {
+            serverUrl: document.getElementById('serverUrl'),
+            connectionStatus: document.getElementById('connectionStatus'),
+            roomList: document.getElementById('roomList'),
+            roomCount: document.getElementById('roomCount'),
+            noRoomSelected: document.getElementById('noRoomSelected'),
+            roomDetails: document.getElementById('roomDetails'),
+            
+            displayRoomId: document.getElementById('displayRoomId'),
+            displayPhase: document.getElementById('displayPhase'),
+            
+            displayHealthA: document.getElementById('displayHealthA'),
+            displayManaA: document.getElementById('displayManaA'),
+            turnIndicatorA: document.getElementById('turnIndicatorA'),
+            turnTagA: document.getElementById('turnTagA'),
+
+            displayHealthB: document.getElementById('displayHealthB'),
+            displayManaB: document.getElementById('displayManaB'),
+            turnIndicatorB: document.getElementById('turnIndicatorB'),
+            turnTagB: document.getElementById('turnTagB'),
+            
+            logContainer: document.getElementById('logContainer'),
+        };
+
+        // 상태 표시 업데이트 함수
+        function setStatus(isOnline, message) {
+            if (isOnline) {
+                uiElements.connectionStatus.innerHTML = `
+                    <span class="relative flex h-3 w-3">
+                      <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                      <span class="relative inline-flex rounded-full h-3 w-3 bg-green-500"></span>
+                    </span>
+                    <span class="text-green-400">${message}</span>
+                `;
+            } else {
+                uiElements.connectionStatus.innerHTML = `
+                    <span class="relative flex h-3 w-3">
+                      <span class="relative inline-flex rounded-full h-3 w-3 bg-red-500"></span>
+                    </span>
+                    <span class="text-red-400">${message}</span>
+                `;
+            }
+        }
+
+        // 1. 방 목록 가져오기
+        async function fetchRooms() {
+            const baseUrl = uiElements.serverUrl.value.trim();
+            try {
+                const response = await fetch(`${baseUrl}/api/admin/rooms`);
+                if (!response.ok) throw new Error('Network response was not ok');
+                const data = await response.json();
+
+                setStatus(true, "서버 연결됨");
+                renderRoomList(data.rooms);
+            } catch (error) {
+                console.error("방 목록 로드 실패:", error);
+                setStatus(false, "서버 연결 실패");
+                uiElements.roomList.innerHTML = `<div class="p-3 text-red-400 text-sm text-center">서버 연결에 실패했습니다.<br>CORS 설정이나 서버 주소를 확인하세요.</div>`;
+            }
+        }
+
+        // 방 목록 렌더링
+        function renderRoomList(rooms) {
+            uiElements.roomCount.textContent = rooms.length;
+            
+            if (rooms.length === 0) {
+                uiElements.roomList.innerHTML = `<div class="text-center text-gray-500 mt-10 text-sm">현재 진행 중인 게임이 없습니다.</div>`;
+                return;
+            }
+
+            uiElements.roomList.innerHTML = '';
+            rooms.forEach(roomId => {
+                const isSelected = roomId === currentSelectedRoomId;
+                const btn = document.createElement('button');
+                btn.className = `w-full text-left p-3 rounded-lg mb-1 transition-all duration-200 border ${
+                    isSelected 
+                    ? 'bg-blue-600/20 border-blue-500/50 text-blue-300' 
+                    : 'bg-gray-800 border-transparent hover:bg-gray-700 text-gray-300 hover:border-gray-600'
+                }`;
+                btn.innerHTML = `
+                    <div class="font-mono text-xs opacity-70 mb-1">Room ID</div>
+                    <div class="truncate font-medium">${roomId}</div>
+                `;
+                btn.onclick = () => selectRoom(roomId);
+                uiElements.roomList.appendChild(btn);
+            });
+        }
+
+        // 2. 특정 방 선택 및 상태 폴링 시작
+        function selectRoom(roomId) {
+            currentSelectedRoomId = roomId;
+            uiElements.noRoomSelected.classList.add('hidden');
+            uiElements.roomDetails.classList.remove('hidden');
+            uiElements.displayRoomId.textContent = `Room: ${roomId}`;
+            
+            // 방 목록 UI 갱신 (선택 표시)
+            fetchRooms();
+
+            // 기존 폴링 제거
+            if (roomDetailInterval) clearInterval(roomDetailInterval);
+
+            // 즉시 1회 호출 후 1초마다 반복
+            fetchRoomDetails(roomId);
+            roomDetailInterval = setInterval(() => fetchRoomDetails(roomId), 1000);
+        }
+
+        // 특정 방 상세 정보 가져오기
+        async function fetchRoomDetails(roomId) {
+            const baseUrl = uiElements.serverUrl.value.trim();
+            try {
+                const response = await fetch(`${baseUrl}/api/admin/rooms/${roomId}`);
+                if (!response.ok) throw new Error('Network response was not ok');
+                const result = await response.json();
+
+                if (result.status === "error") {
+                    // 방이 사라졌을 경우
+                    clearInterval(roomDetailInterval);
+                    alert("해당 방이 종료되었거나 찾을 수 없습니다.");
+                    currentSelectedRoomId = null;
+                    uiElements.noRoomSelected.classList.remove('hidden');
+                    uiElements.roomDetails.classList.add('hidden');
+                    fetchRooms();
+                    return;
+                }
+
+                if (result.state === "대기 중 (게임 미시작)") {
+                    uiElements.displayPhase.textContent = "WAITING FOR PLAYERS";
+                    return;
+                }
+
+                updateDashboardUI(result.data);
+
+            } catch (error) {
+                console.error("방 상태 로드 실패:", error);
+            }
+        }
+
+        // 대시보드 UI 업데이트
+        function updateDashboardUI(data) {
+            // 현재 페이즈
+            uiElements.displayPhase.textContent = (data.currentPhase || "UNKNOWN").toUpperCase();
+
+            // 상태 매핑 (데이터)
+            uiElements.displayHealthA.textContent = data.playerAHealth;
+            uiElements.displayManaA.textContent = data.playerAMana;
+            
+            uiElements.displayHealthB.textContent = data.playerBHealth;
+            uiElements.displayManaB.textContent = data.playerBMana;
+
+            // 턴 인디케이터 초기화
+            uiElements.turnIndicatorA.classList.add('hidden');
+            uiElements.turnTagA.classList.add('hidden');
+            uiElements.turnIndicatorB.classList.add('hidden');
+            uiElements.turnTagB.classList.add('hidden');
+
+            // 간단한 규칙: Player A와 B를 구분하기 위해 보통 uid를 비교하지만, 
+            // 현재 API 스냅샷에서는 A/B의 정확한 UID를 알 수 없습니다.
+            // (서버 코드에 PlayerAUid 속성을 스냅샷에 추가해주시면 더 정확해집니다)
+            // 임시 방편으로, 페이즈가 TurnStart일 때 UI를 빛나게 하는 예시를 적용합니다.
+            
+            // 만약 서버에서 보내주는 data.currentTurnPlayerUid 가 Player A의 Uid와 같다면 아래처럼 켭니다.
+            // 여기서는 시각적 효과를 보여주기 위해 임의 처리합니다.
+            // 실제 구현시 Snapshot 클래스에 PlayerAUid 문자열을 추가해 주시면 완벽합니다.
+            
+            if (data.currentPhase !== "GameEnd") {
+                // UI 하이라이팅 데모 (서버 데이터 연동 시 이 부분을 수정하세요)
+                // 예: if (data.currentTurnPlayerUid === data.playerAUid)
+                uiElements.turnIndicatorA.classList.remove('hidden');
+                uiElements.turnTagA.classList.remove('hidden');
+            }
+
+            // 로그 렌더링 호출
+            renderLogs(data.logs);
+        }
+
+        // 로그 렌더링 함수 추가
+        function renderLogs(logs) {
+            if (!logs || !Array.isArray(logs) || logs.length === 0) {
+                uiElements.logContainer.innerHTML = '<div class="absolute inset-0 flex items-center justify-center text-gray-500">아직 기록된 로그가 없습니다.</div>';
+                return;
+            }
+
+            // 사용자가 스크롤을 위로 올려 과거 로그를 보고 있는지 확인
+            const isScrolledToBottom = uiElements.logContainer.scrollHeight - uiElements.logContainer.clientHeight <= uiElements.logContainer.scrollTop + 20;
+
+            uiElements.logContainer.innerHTML = ''; // 초기화
+
+            logs.forEach(log => {
+                const logEl = document.createElement('div');
+                logEl.className = "py-1.5 border-b border-gray-800/50 text-gray-300 flex gap-3 hover:bg-gray-800/30 transition-colors px-2 rounded";
+                
+                // 시간 포맷팅
+                let timeStr = "00:00:00";
+                if (log.timestamp) {
+                    const date = new Date(log.timestamp);
+                    timeStr = date.toLocaleTimeString('ko-KR', { hour12: false });
+                }
+                
+                // 주체에 따른 색상 변경
+                let actorColor = "text-yellow-400";
+                let actorLabel = log.actor || 'System';
+                if (actorLabel.includes("A") || actorLabel === "Player1") actorColor = "text-red-400";
+                else if (actorLabel.includes("B") || actorLabel === "Player2") actorColor = "text-blue-400";
+
+                logEl.innerHTML = `
+                    <span class="text-gray-600 shrink-0 w-20">[${timeStr}]</span>
+                    <span class="${actorColor} font-semibold shrink-0 min-w-[80px]">${actorLabel}</span>
+                    <span class="text-gray-200 break-all leading-relaxed">${log.message || '-'}</span>
+                `;
+                uiElements.logContainer.appendChild(logEl);
+            });
+
+            // 스크롤이 맨 아래에 있었을 경우, 새 로그가 추가되면 맨 아래로 자동 스크롤
+            if (isScrolledToBottom) {
+                uiElements.logContainer.scrollTop = uiElements.logContainer.scrollHeight;
+            }
+        }
+
+        // 초기 실행
+        fetchRooms();
+        // 5초마다 방 목록 갱신
+        roomListInterval = setInterval(fetchRooms, 5123);
+
+        // 서버 주소 변경 시 다시 시도
+        uiElements.serverUrl.addEventListener('change', () => {
+            fetchRooms();
+        });
+
+    </script>
+</body>
+</html>
