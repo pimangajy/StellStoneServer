@@ -560,8 +560,8 @@ namespace GameServer
             var handB = _playerB.Hand.Select(c => c.ToCardInfo()).ToList();
 
             // 양쪽 플레이어에게 최종 손패와 함께 게임 시작을 알림
-            await _room.SendMessageToPlayerAsync(_playerA.PlayerRef, JsonConvert.SerializeObject(new S_GameReady { action = "GAME_READY", firstPlayerUid = _firstPlayerUid, finalHand = handA }));
-            await _room.SendMessageToPlayerAsync(_playerB.PlayerRef, JsonConvert.SerializeObject(new S_GameReady { action = "GAME_READY", firstPlayerUid = _firstPlayerUid, finalHand = handB }));
+            await _room.SendMessageToPlayerAsync(_playerA.PlayerRef, JsonConvert.SerializeObject(new S_GameReady { action = "GAME_READY", firstPlayerUid = _firstPlayerUid, finalHand = handA, enermyfinalHand = handB }));
+            await _room.SendMessageToPlayerAsync(_playerB.PlayerRef, JsonConvert.SerializeObject(new S_GameReady { action = "GAME_READY", firstPlayerUid = _firstPlayerUid, finalHand = handB, enermyfinalHand = handA }));
 
             await Task.Delay(1500); // 연출을 위한 잠시 대기
             await StartTurnAsync(_firstPlayerUid); // 선공 플레이어 턴 시작
@@ -710,7 +710,7 @@ namespace GameServer
             // 8. 카드 효과 등으로 인해 죽은 개체가 있는지 확인
             await ProcessDeathsAsync();
 
-            OnCardPlayed(p.Uid, card.CardId);
+            OnCardPlayed!(p.Uid, card.CardId);
         }
 
         /// <summary>
@@ -728,7 +728,7 @@ namespace GameServer
             att.HasAttacked = true;
             await ResolveCombatAsync(att, def);
 
-            OnAttacked(att.OwnerUid, def.OwnerUid, att.Attack);
+            OnAttacked!(att.OwnerUid, def.OwnerUid, att.Attack);
             
             // 결과 브로드캐스트 및 사망 처리
             await BroadcastUpdatesAsync(senderUid);

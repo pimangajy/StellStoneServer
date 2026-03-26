@@ -74,3 +74,10 @@ crashlytics-build.properties
 /[Aa]ssets/[Ss]treamingAssets/aa.meta
 /[Aa]ssets/[Ss]treamingAssets/aa/*
 membership-management-17941-firebase-adminsdk-fbsvc-8674819ab6.json
+membership-management-17941-firebase-adminsdk-fbsvc-cd80b503fe.json
+appsettings.json
+appsettings.json
+*.json
+bin/Debug/net8.0/membership-management-17941-firebase-adminsdk-fbsvc-cc2562440d.json
+bin/Debug/net8.0/appsettings.json
+appsettings.json

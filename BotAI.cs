@@ -28,7 +28,7 @@ namespace GameServer
             var p = _gameState.GetPlayerState(_botUid);
 
             // 1. 사람처럼 생각하는 시간 연출
-            await Task.Delay(2000); 
+            await Task.Delay(5000); 
 
             // 2. 봇 AI 멀리건 조건: 4코스트 이상이거나 주문(Spell) 카드인 경우 교체
             var toReplace = p.Hand
