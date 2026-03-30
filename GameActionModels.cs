@@ -57,6 +57,25 @@ namespace GameServer
         public bool isMember;
     }
 
+    /// <summary>
+    /// 엔티티(하수인/영웅)의 수치 변화와 최종 상태 정보를 담는 객체입니다.
+    /// </summary>
+    public class EntityUpdateInfo
+    {
+        // 대상 식별자
+        public string? entityId;
+
+        // [최종 상태] 클라이언트는 연출 종료 후 또는 즉시 이 값으로 데이터를 동기화합니다.
+        public int currentHp;
+        public int currentAtk;
+        public bool isDead;
+
+        // [변화량] 클라이언트가 연출(데미지 텍스트 등)을 위해 사용할 수치 데이터입니다.
+        // 클라이언트는 이 값을 참조하여 -2, +5 등의 숫자를 화면에 표시합니다.
+        public int hpDelta;    
+        public int atkDelta;   
+    }
+
     // ==================================================================
     // 3. 클라이언트 -> 서버 (C -> S) 메시지
     // ==================================================================
@@ -166,7 +185,7 @@ namespace GameServer
     public class S_PhaseStart : BaseGameAction
     {
         // action = "PHASE_START"
-        public string? newTurnPlayerUid; // (턴 시작 시에만) 새 턴을 시작하는 플레이어 UID
+        public string? TurnPlayerUid; // 새 턴을 시작하는 플레이어 UID
         public string? phase; // "Standby", "Draw", "Main", "End"
         public CardInfo? drawnCard; // (Draw Phase 전용) 방금 뽑은 카드 (null일 수 있음)
         public long turnEndTime; // (Main Phase 전용) 턴 종료 시간 (Unix timestamp)

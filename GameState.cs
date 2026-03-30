@@ -578,7 +578,7 @@ namespace GameServer
 
             // 1. Standby 페이즈 알림
             _currentPhase = "Standby";
-            var phaseMsg = JsonConvert.SerializeObject(new S_PhaseStart { action="PHASE_START", phase="Standby", newTurnPlayerUid=uid });
+            var phaseMsg = JsonConvert.SerializeObject(new S_PhaseStart { action="PHASE_START", phase="Standby", TurnPlayerUid=_currentTurnPlayerUid });
             await _room.SendMessageToPlayerAsync(p.PlayerRef, phaseMsg);
             await _room.SendMessageToPlayerAsync(op.PlayerRef, phaseMsg);
 
@@ -592,9 +592,9 @@ namespace GameServer
             // 3. Draw 페이즈 (카드 한 장 뽑기)
             _currentPhase = "Draw";
             GameCard? drawnCard = p.DrawCard();
-            // 내 드로우 카드는 나만 볼 수 있도록 전송
-            await _room.SendMessageToPlayerAsync(p.PlayerRef, JsonConvert.SerializeObject(new S_PhaseStart { action="PHASE_START", phase="Draw", drawnCard=drawnCard?.ToCardInfo() }));
-            await _room.SendMessageToPlayerAsync(op.PlayerRef, JsonConvert.SerializeObject(new S_PhaseStart { action="PHASE_START", phase="Draw", drawnCard=null }));
+            // 드로우 카드 전송
+            await _room.SendMessageToPlayerAsync(p.PlayerRef, JsonConvert.SerializeObject(new S_PhaseStart {TurnPlayerUid = _currentTurnPlayerUid, action="PHASE_START", phase="Draw", drawnCard=drawnCard?.ToCardInfo() }));
+            await _room.SendMessageToPlayerAsync(op.PlayerRef, JsonConvert.SerializeObject(new S_PhaseStart {TurnPlayerUid = _currentTurnPlayerUid, action="PHASE_START", phase="Draw", drawnCard=drawnCard?.ToCardInfo() }));
 
             await Task.Delay(1000);
 
@@ -667,7 +667,10 @@ namespace GameServer
 
             // 1. 카드 존재 및 마나 자원 확인
             GameCard? card = p.Hand.FirstOrDefault(c => c.InstanceId == action.handCardInstanceId);
-            if (card == null || p.CurrentMana < card.CurrentCost) return;
+            if (card == null || p.CurrentMana < card.CurrentCost) 
+            {
+                return;
+            }
 
             // 2. 하수인 또는 멤버인지 확인
             bool isUnit = card.Type == "Minion" || card.Type == "하수인" || card.Type == "Member" || card.Type == "멤버";
