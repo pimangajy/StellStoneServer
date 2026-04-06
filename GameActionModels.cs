@@ -76,6 +76,22 @@ namespace GameServer
         public int atkDelta;   
     }
 
+    /// <summary>
+    /// 게임 내에서 발생하는 하나의 '사건'을 정의합니다.
+    /// 유니티의 JsonUtility 호환성을 위해 상속보다는 평탄화(Flat)된 구조를 권장합니다.
+    /// </summary>
+    public class GameEvent
+    {
+        public string? eventType; // 사건 종류: "ATTACK", "DAMAGE", "DEATH", "EFFECT_TRIGGER", "SUMMON" 등
+        
+        public int sourceEntityId; // 사건의 주체 (누가)
+        public int targetEntityId; // 사건의 대상 (누구에게)
+        
+        public int value;          // 수치 (데미지량, 힐량 등)
+        public string? stringValue;// 문자열 데이터 (발동한 효과의 이름, 카드 ID 등)
+        public EntityData? entityData; // 객체 데이터
+    } 
+
     // ==================================================================
     // 3. 클라이언트 -> 서버 (C -> S) 메시지
     // ==================================================================
@@ -142,6 +158,21 @@ namespace GameServer
     // ==================================================================
     // 4. 서버 -> 클라이언트 (S -> C) 메시지
     // ==================================================================
+
+    /// <summary>
+    /// 하나의 논리적 행동(예: 공격, 카드사용)으로 인해 발생한 
+    /// 모든 사건의 순차적 기록과 최종 상태를 한 번에 클라이언트에게 전달합니다.
+    /// </summary>
+    public class S_ActionResolution : BaseGameAction
+    {
+        // action = "ACTION_RESOLUTION"
+        
+        // 1. 애니메이션 재생을 위한 순차적 사건 기록 (대본)
+        public List<GameEvent> eventLog = new List<GameEvent>();
+        
+        // 2. 동기화 어긋남 방지를 위한 최종 엔티티 상태 (애니메이션이 끝난 후 최종 보정용)
+        public List<EntityData>? finalStateUpdates; 
+    }
 
     /// <summary>
     /// (S->C) 게임 시작 전, 멀리건할 카드 정보를 보냅니다.

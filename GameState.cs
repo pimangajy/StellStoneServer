@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.Text; // StringBuilder 사용 (문자열 조합)
 using System.Threading.Tasks; // 비동기 작업(Task) 사용
@@ -316,7 +317,24 @@ namespace GameServer
         private readonly Dictionary<string, C_MulliganDecision?> _mulliganDecisions = new Dictionary<string, C_MulliganDecision?>();
         
         // 클라이언트에 한꺼번에 보낼 변경된 개체 데이터 목록
+        private List<GameEvent> _eventBuffer = new List<GameEvent>();
         private List<EntityData> _pendingUpdates = new List<EntityData>();
+
+        /// <summary>
+        /// (신규) 이벤트를 로그에 기록합니다.
+        /// </summary>
+        public void LogEvent(string type, int sourceId, int targetId = 0, int val = 0, string? strVal = null, EntityData entityData = null)
+        {
+            _eventBuffer.Add(new GameEvent
+            {
+                eventType = type,
+                sourceEntityId = sourceId,
+                targetEntityId = targetId,
+                value = val,
+                stringValue = strVal,
+                entityData = entityData,
+            });
+        }
 
         // 로그 보관 리스트
          private List<GameLogEvent> _actionLogs = new List<GameLogEvent>();
@@ -663,6 +681,7 @@ namespace GameServer
         {
             PlayerState p = GetPlayerState(senderUid);
             PlayerState op = GetPlayerState(senderUid, true);
+            _eventBuffer.Clear();
             _pendingUpdates.Clear();
 
             // 1. 카드 존재 및 마나 자원 확인
@@ -692,14 +711,20 @@ namespace GameServer
                 sourceEntity.Position = action.position;
                 sourceEntity.IsMember = isMember;
                 
+                LogEvent("SUMMON", sourceEntity.EntityId, 0, action.position, card.CardId, sourceEntity.ToEntityData());
                 _allEntities.Add(eid, sourceEntity);
                 targetZone[action.position] = sourceEntity;
                 AddPendingUpdate(sourceEntity); // 클라이언트에게 알리기 위해 추가
 
                 // 6. '전투의 함성(ON_PLAY)' 효과 처리
                 GameEntity? battlecryTarget = null;
-                if(action.targetEntityId > 0) _allEntities.TryGetValue(action.targetEntityId, out battlecryTarget);
-                
+                if(action.targetEntityId > 0) 
+                {
+                    _allEntities.TryGetValue(action.targetEntityId, out battlecryTarget);
+                }
+                // 타겟 지정 여부와 무관하게 효과가 발동한다는 연출을 띄우기 위해 이벤트 기록
+                LogEvent("EFFECT_TRIGGER", sourceEntity.EntityId, action.targetEntityId, 0, "ON_PLAY");
+
                 await _effectProcessor.ExecuteEffectsAsync(card, sourceEntity, battlecryTarget, "ON_PLAY", senderUid);
             }
 
@@ -721,11 +746,16 @@ namespace GameServer
         /// </summary>
         public async Task ProcessAttackAsync(string senderUid, C_Attack action)
         {
+            _eventBuffer.Clear();
+
             // 공격자와 방어자가 유효한지 확인
             if(!_allEntities.TryGetValue(action.attackerEntityId, out var att) || !_allEntities.TryGetValue(action.defenderEntityId, out var def)) return;
             
             // 공격 권한(내 것인지) 및 공격 가능 상태 확인
             if(att.OwnerUid != senderUid || !att.CanAttack || att.HasAttacked) return;
+
+            // 이벤트 로그 저장
+            LogEvent("ATTACK", att.EntityId, def.EntityId);
 
             // 공격 기회 소모 및 실제 전투 계산
             att.HasAttacked = true;
@@ -745,31 +775,44 @@ namespace GameServer
         {
             _pendingUpdates.Clear();
             // 서로의 공격력만큼 체력 차감
-            ApplyDamage(def, att.Attack);
-            ApplyDamage(att, def.Attack);
+            ApplyDamage(def, att.Attack, att.EntityId);
+            ApplyDamage(att, def.Attack, def.Attack);
         }
 
         /// <summary>
         /// 특정 개체에 데미지를 입히고 업데이트 목록에 추가합니다.
         /// </summary>
-        public void ApplyDamage(GameEntity target, int amount)
+        public void ApplyDamage(GameEntity target, int amount, int sourceId = 0)
         {
+            if (amount <= 0) return;
             target.Health -= amount;
+            LogEvent("DAMAGE", sourceId, target.EntityId, amount);
+            OnAttacked(target.EntityId.ToString(), sourceId.ToString(), amount);
             AddPendingUpdate(target);
         }
-        public void ApplyHeal(GameEntity target, int amount)
+        /// <summary>
+        /// 특정 개체에 힐을 하고 업데이트 목록에 추가합니다.
+        /// </summary>
+        public void ApplyHeal(GameEntity target, int amount, int sourceId = 0)
         {
             int oldHealth = target.Health;
             target.Health = Math.Min(target.Health + amount, target.MaxHealth);
-            Console.WriteLine($"[GameState] {target.EntityId} 회복 {amount}");
+            int actualHeal = target.Health - oldHealth;
+            Console.WriteLine($"[GameState] {target.EntityId} 회복 {actualHeal}");
+            
+            if (actualHeal > 0) LogEvent("HEAL", sourceId, target.EntityId, actualHeal);
             AddPendingUpdate(target);
         }
-
-        public void ApplyBuff(GameEntity target, int attackBuff, int healthBuff)
+        /// <summary>
+        /// 특정 개체에 버프를 주고 업데이트 목록에 추가합니다.
+        /// </summary>
+        public void ApplyBuff(GameEntity target, int attackBuff, int healthBuff, int sourceId = 0)
         {
             target.Attack += attackBuff;
             target.Health += healthBuff;
             target.MaxHealth += healthBuff; 
+            
+            LogEvent("BUFF", sourceId, target.EntityId, attackBuff, healthBuff.ToString());
             AddPendingUpdate(target);
         }
 
@@ -780,6 +823,7 @@ namespace GameServer
         private async Task<bool> ProcessDeathsAsync()
         {
             if(_isGameOver) return true;
+            _eventBuffer.Clear();
             _pendingUpdates.Clear();
 
             // 1. 죽은 개체들 필터링
@@ -788,9 +832,12 @@ namespace GameServer
 
             foreach (var dead in deadEntities)
             {
-                // 2. '죽음의 메아리(ON_DEATH)' 효과 실행
-                await _effectProcessor.ExecuteEffectsAsync(dead.SourceCard, dead, null, "ON_DEATH", dead.OwnerUid);
+                LogEvent("DEATH", dead.EntityId);
                 
+                // 2. '죽음의 메아리(ON_DEATH)' 효과 실행
+                LogEvent("EFFECT_TRIGGER", dead.EntityId, 0, 0, "ON_DEATH");
+                await _effectProcessor.ExecuteEffectsAsync(dead.SourceCard, dead, null, "ON_DEATH", dead.OwnerUid);
+
                 // 3. 서버 데이터 저장소에서 제거
                 _allEntities.Remove(dead.EntityId);
                 
@@ -850,15 +897,26 @@ namespace GameServer
         private async Task BroadcastUpdatesAsync(string triggerPlayerUid) 
         { 
              PlayerState p = GetPlayerState(triggerPlayerUid);
+
+             // 이벤트가 없거나 업데이트할 내용이 없다면 스킵
+            if (_eventBuffer.Count == 0 && _pendingUpdates.Count == 0) return;
              
              // 1. 변경된 엔티티(하수인/영웅) 정보 전송
-             if (_pendingUpdates.Count > 0)
+            var resolutionMsg = new S_ActionResolution
             {
-                string json = JsonConvert.SerializeObject(new S_UpdateEntities { action = "UPDATE_ENTITIES", updatedEntities = _pendingUpdates });
-                await _room.SendMessageToPlayerAsync(_playerA.PlayerRef, json);
-                await _room.SendMessageToPlayerAsync(_playerB.PlayerRef, json);
-                _pendingUpdates.Clear();
-            }
+                action = "ACTION_RESOLUTION",
+                eventLog = [.. _eventBuffer], // 복사본 전달
+                finalStateUpdates = [.. _pendingUpdates]
+            };
+
+            string json = JsonConvert.SerializeObject(resolutionMsg);
+
+            // string json = JsonConvert.SerializeObject(new S_UpdateEntities { action = "UPDATE_ENTITIES", updatedEntities = _pendingUpdates });
+            await _room.SendMessageToPlayerAsync(_playerA.PlayerRef, json);
+            await _room.SendMessageToPlayerAsync(_playerB.PlayerRef, json);
+            _eventBuffer.Clear();
+            _pendingUpdates.Clear();
+            
 
              // 2. 현재 행동한 플레이어의 마나 정보 갱신 전송
              var manaMsg = new S_UpdateMana { action = "UPDATE_MANA", ownerUid = p.Uid, currentMana = p.CurrentMana, maxMana = p.MaxMana };
