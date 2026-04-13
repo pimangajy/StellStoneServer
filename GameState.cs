@@ -323,7 +323,7 @@ namespace GameServer
         /// <summary>
         /// (신규) 이벤트를 로그에 기록합니다.
         /// </summary>
-        public void LogEvent(string type, int sourceId, int targetId = 0, int val = 0, string? strVal = null, EntityData entityData = null)
+        public void LogEvent(string type, int sourceId, int targetId = 0, int val = 0, string? strVal = null, EntityData? entityData = null)
         {
             _eventBuffer.Add(new GameEvent
             {
@@ -787,7 +787,7 @@ namespace GameServer
             if (amount <= 0) return;
             target.Health -= amount;
             LogEvent("DAMAGE", sourceId, target.EntityId, amount);
-            OnAttacked(target.EntityId.ToString(), sourceId.ToString(), amount);
+            OnAttacked!(sourceId.ToString(), target.EntityId.ToString(), amount);
             AddPendingUpdate(target);
         }
         /// <summary>
