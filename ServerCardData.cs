@@ -7,62 +7,62 @@ namespace GameServer
     public class ServerCardData
     {
         // 1. 카드 ID
-        [FirestoreProperty("CardID")] // (기존: CardID) -> OK
+        [FirestoreProperty("CardID")] 
         public string? CardID { get; set; }
 
         // 2. 이름
-        [FirestoreProperty("Name")] // (수정: name -> Name)
+        [FirestoreProperty("Name")] 
         public string? Name { get; set; }
 
         // 3. 코스트
-        [FirestoreProperty("Cost")] // (수정: cost -> Cost)
+        [FirestoreProperty("Cost")] 
         public int Cost { get; set; }
 
         // 4. 공격력
-        [FirestoreProperty("Attack")] // (수정: attack -> Attack)
+        [FirestoreProperty("Attack")] 
         public int? Attack { get; set; } 
 
         // 5. 체력
-        [FirestoreProperty("Health")] // (수정: health -> Health)
+        [FirestoreProperty("Health")] 
         public int? Health { get; set; }
 
         // 6. 카드 종류
-        [FirestoreProperty("Type")] // (수정: type -> Type)
-        public string? CardType { get; set; }
-
+        // FirestoreEnumNameConverter를 사용하여 문자열을 Enum으로 매핑
+        [FirestoreProperty("Type", ConverterType = typeof(FirestoreEnumNameConverter<CardType>))]
+        public CardType? CardType { get; set; }
         // 7. 직업
-        [FirestoreProperty("Class")] // (수정: class -> Class)
-        public string? Class { get; set; }
+        [FirestoreProperty("Class", ConverterType = typeof(FirestoreEnumNameConverter<CardClass>))] 
+        public CardClass? Class { get; set; }
 
         // 8. 종족
-        [FirestoreProperty("Tribe")] // (수정: tribe -> Tribe)
-        public string? Tribe { get; set; }
+        [FirestoreProperty("Tribe", ConverterType = typeof(FirestoreEnumNameConverter<CardTribe>))] 
+        public CardTribe? Tribe { get; set; }
 
         // 9. 효과 설명 텍스트
-        [FirestoreProperty("Description")] // (수정: description -> Description)
+        [FirestoreProperty("Description")]
         public string? Description { get; set; }
 
         // 10. 효과 데이터
-        [FirestoreProperty("Effects")] // (수정: effects -> Effects)
+        [FirestoreProperty("Effects")]
         public string? EffectsString { get; set; }
 
-        [FirestoreProperty("TargetRule")] // (수정: targetRule -> TargetRule)
-        public string? TargetRule { get; set; }
+        [FirestoreProperty("TargetRule", ConverterType = typeof(FirestoreEnumNameConverter<TargetRule>))] 
+        public TargetRule? CardTargetRule { get; set; }
 
         // (추가) 희귀도
-        [FirestoreProperty("Rarity")] // (수정: rarity -> Rarity)
-        public string? Rarity { get; set; }
+        [FirestoreProperty("Rarity", ConverterType = typeof(FirestoreEnumNameConverter<CardRarity>))] 
+        public CardRarity? Rarity { get; set; }
 
         // (추가) 확장팩
-        [FirestoreProperty("Expansion")] // (수정: expansion -> Expansion)
-        public string? Expansion { get; set; }
+        [FirestoreProperty("Expansion", ConverterType = typeof(FirestoreEnumNameConverter<CardExpansion>))] 
+        public CardExpansion? Expansion { get; set; }
 
         // (추가) 비고
-        [FirestoreProperty("Additional")] // (수정: additional -> Additional)
+        [FirestoreProperty("Additional")] 
         public string? Additional { get; set; }
 
         // 키워드 (CSV에 없다면 기본값 처리)
-        public List<string> Keywords { get; set; } = new List<string>();
+        public List<CardKeywords> Keywords { get; set; } = new List<CardKeywords>();
 
         public int AttackValue => Attack ?? 0;
         public int HealthValue => Health ?? 0;
@@ -70,28 +70,106 @@ namespace GameServer
         public List<ServerEffectData> GetParsedEffects()
         {
             var list = new List<ServerEffectData>();
-            if (string.IsNullOrEmpty(EffectsString)) return list;
+            if (string.IsNullOrEmpty(EffectsString)) return list; // [1]
 
             try 
             {
-                var parts = EffectsString.Split('|'); 
-                if (parts.Length >= 2)
+                // 1. '&' 기호를 기준으로 여러 개의 효과를 분리
+                var effectStrings = EffectsString.Split('&', StringSplitOptions.RemoveEmptyEntries); 
+
+                foreach (var singleEffectStr in effectStrings)
                 {
-                    string trigger = parts[0];
-                    var detailParts = parts[1].Split(':'); 
-                    
+                    var cleanStr = singleEffectStr.Trim(); 
                     var effect = new ServerEffectData();
-                    effect.Trigger = trigger;
-                    effect.EffectName = detailParts.Length > 0 ? detailParts[0] : "NONE";
+                    string detailStr = "";
+
+                    // 2. '|' 기호가 포함되어 있는지 확인하여 트리거 유무 판단
+                    if (cleanStr.Contains('|'))
+                    {
+                        // 트리거가 명시된 경우 (예: "ON_DEATH|DAMAGE:1:0:ALL_ENEMIES")
+                        var parts = cleanStr.Split('|'); 
+                        string triggerStr = parts[0]; 
+                        detailStr = parts[1]; // '|' 뒷부분을 세부 내용으로 지정
+                        
+                        // Trigger 문자열을 EffectTriggerType Enum으로 변환
+                        if (Enum.TryParse<EffectTriggerType>(triggerStr, true, out var parsedTrigger))
+                        {
+                            effect.Trigger = parsedTrigger;
+                        }
+                        else
+                        {
+                            effect.Trigger = EffectTriggerType.NONE;
+                        }
+                    }
+                    else
+                    {
+                        // '|' 기호가 없는 경우 (예: "DAMAGE:1:0:TARGET")
+                        // 트리거를 생략한 것이므로 질문자님 의도대로 기본값(ON_PLAY)을 강제 할당합니다.
+                        effect.Trigger = EffectTriggerType.ON_PLAY; 
+                        detailStr = cleanStr; // 문자열 전체가 세부 내용이 됨
+                    }
+
+                    // 3. 세부 효과 내용(: 기준) 파싱
+                    var detailParts = detailStr.Split(':'); 
+                    string[] effectNameStr = detailParts;
                     
+                    // EffectName 파싱 (문자열 -> GameEventType Enum)
+                    if (Enum.TryParse<GameEventType>(effectNameStr[0], true, out var parsedEffectName))
+                    {
+                        effect.EffectName = parsedEffectName;
+                    }
+                    else
+                    {
+                        effect.EffectName = GameEventType.NONE;
+                    }
+                    
+                    // 4. 수치 및 타겟 정보 파싱 (기존)
                     if (detailParts.Length > 1 && int.TryParse(detailParts[1], out int v1)) effect.Value1 = v1;
                     if (detailParts.Length > 2 && int.TryParse(detailParts[2], out int v2)) effect.Value2 = v2;
-                    
-                    effect.Target = detailParts.Length > 3 ? detailParts[3] : "NONE";
-                    list.Add(effect);
+
+                    // EffectName 파싱 (문자열 -> GameEventType Enum)
+                    if (effectNameStr.Length > 3 && Enum.TryParse<TargetRule>(effectNameStr[3], true, out var parsedTargetRule))
+                    {
+                        effect.Target = parsedTargetRule;
+                    }
+                    else
+                    {
+                        effect.Target = TargetRule.None;
+                    }
+
+                    // 5. 조건(Condition) 파싱 (문자열 -> CardCondition Enum)
+                    if (detailParts.Length > 4)
+                    {
+                        if (Enum.TryParse<CardCondition>(detailParts[4], true, out var parsedCondition))
+                        {
+                            effect.Condition = parsedCondition;
+                        }
+                        else
+                        {
+                            effect.Condition = CardCondition.NONE; // 오류 시 기본값 처리
+                        }
+                    }
+                    else
+                    {
+                        effect.Condition = CardCondition.NONE; // 조건이 생략된 경우
+                    }
+
+                    // 6. 조건의 값(ConditionValue)은 string 그대로 저장!
+                    effect.ConditionValue = detailParts.Length > 5 ? detailParts[5] : null;
+
+                    // 7. 반복 횟수(Count) 파싱
+                    if (detailParts.Length > 6 && int.TryParse(detailParts[6], out int count))
+                    {
+                        effect.Count = count;
+                    }
+                    else
+                    {
+                        effect.Count = 1; // 생략 시 기본값 1회
+                    }
                 }
             }
             catch { }
+            
             return list;
         }
     }

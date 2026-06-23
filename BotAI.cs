@@ -32,7 +32,7 @@ namespace GameServer
 
             // 2. 봇 AI 멀리건 조건: 4코스트 이상이거나 주문(Spell) 카드인 경우 교체
             var toReplace = p.Hand
-                .Where(c => c.CurrentCost >= 4 || c.Type == "Spell" || c.Type == "주문")
+                .Where(c => c.CurrentCost >= 4 || c.Type == CardType.주문)
                 .Select(c => c.InstanceId)
                 .ToList();
                 
@@ -63,7 +63,7 @@ namespace GameServer
                 
                 // 손패에서 낼 수 있는 가장 높은 코스트의 '하수인' 카드부터 탐색
                 var playableCards = me.Hand
-                    .Where(c => c.CurrentCost <= me.CurrentMana && (c.Type == "Minion" || c.Type == "하수인"))
+                    .Where(c => c.CurrentCost <= me.CurrentMana && c.Type == CardType.하수인)
                     .OrderByDescending(c => c.CurrentCost)
                     .ToList();
 

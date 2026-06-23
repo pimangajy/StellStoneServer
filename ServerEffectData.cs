@@ -10,10 +10,10 @@ namespace GameServer
     public class ServerEffectData
     {
         [FirestoreProperty]
-        public string? Trigger { get; set; } // 예: "ON_PLAY", "ON_DEATH"
+        public EffectTriggerType Trigger { get; set; } // 예: "ON_PLAY", "ON_DEATH"
 
         [FirestoreProperty]
-        public string? EffectName { get; set; } // 예: "DAMAGE", "HEAL", "DRAW"
+        public GameEventType EffectName { get; set; } // 예: "DAMAGE", "HEAL", "DRAW"
 
         [FirestoreProperty]
         public int Value1 { get; set; } // 데미지 양, 드로우 수 등
@@ -22,10 +22,10 @@ namespace GameServer
         public int Value2 { get; set; } // 체력 버프량 등
 
         [FirestoreProperty]
-        public string? Target { get; set; } // 예: "TARGET_ENEMY", "SELF", "ALL_MINIONS"
+        public TargetRule? Target { get; set; } // 예: "TARGET_ENEMY", "SELF", "ALL_MINIONS"
 
         [FirestoreProperty]
-        public string? Condition { get; set; } // 예: "TRIBE", "IF_COMBO"
+        public CardCondition? Condition { get; set; } // 예: "TRIBE", "IF_COMBO"
 
         [FirestoreProperty]
         public string? ConditionValue { get; set; } // 예: "MEMBER", "BEAST"

@@ -255,7 +255,7 @@ namespace GameServer
                 // (게임 규칙) 상대가 나가면 즉시 승리
                 var gameOverMessage = new S_GameOver
                 {
-                    action = "GAME_OVER",
+                    action = GameActionType.GAME_OVER,
                     winnerUid = remainingPlayer.Uid,
                     reason = "OPPONENT_DISCONNECTED"
                 };

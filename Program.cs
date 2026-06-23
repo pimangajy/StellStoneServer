@@ -54,8 +54,18 @@ namespace GameServer
         [FirestoreProperty]
         public List<string>? cardIds { get; set; }
 
+        [FirestoreProperty]
+        public List<string>? sideDeckCardIds { get; set; }
+    
+        [FirestoreProperty]
+        public List<string>? sideDeckFirstTurnCardIds { get; set; }
+
         // Firestore 변환을 위한 기본 생성자
-        public DeckData() { }
+        public DeckData()
+        {
+            sideDeckCardIds = new List<string>();
+            sideDeckFirstTurnCardIds = new List<string>();
+        }
 
         // 서버 코드 내에서 객체 생성을 위한 생성자
         public DeckData(string name, string className)
@@ -63,6 +73,8 @@ namespace GameServer
             deckName = name;
             deckClass = className;
             cardIds = new List<string>(); // 새 덱은 항상 비어있는 카드 리스트로 시작
+            sideDeckCardIds = new List<string>();
+            sideDeckFirstTurnCardIds = new List<string>();
         }
     }
 
@@ -359,6 +371,16 @@ namespace GameServer
                 {
                     Console.WriteLine($"덱 크기 초과 ({updatedDeck.cardIds.Count}장)");
                     return Results.BadRequest(new { status = "error", message = "덱은 30장을 초과할 수 없습니다." });
+                }
+                // 4-3. 사이드덱 검증 
+                if (updatedDeck.sideDeckCardIds != null && updatedDeck.sideDeckCardIds.Count > 5) 
+                {
+                    return Results.BadRequest(new { status = "error", message = "사이드 덱은 5장을 초과할 수 없습니다." });
+                }
+                // 4-4. 선공용 사이드덱 검증
+                if (updatedDeck.sideDeckFirstTurnCardIds != null && updatedDeck.sideDeckFirstTurnCardIds.Count > 3) 
+                {
+                    return Results.BadRequest(new { status = "error", message = "선공 사이드 덱은 3장을 초과할 수 없습니다." });
                 }
                 // TODO: (고급) cardIds의 각 카드가 유효한지, 유저가 소유한 카드인지, 직업/희귀도 규칙을 지켰는지 검증해야 합니다.
 

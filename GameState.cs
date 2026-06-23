@@ -8,6 +8,100 @@ using Newtonsoft.Json; // JSON 직렬화/역직렬화
 
 namespace GameServer
 {
+    public enum CardType
+    {
+        UNKNOWN = 0,
+        하수인,
+        주문,
+        멤버,
+        READER
+    }
+
+    public enum CardClass
+    {
+        Gangzi,
+        Yuni,
+        Huya
+    }
+
+    public enum CardTribe
+    {
+        무소속,
+        강도단,
+        아르냥,
+        바쿠,
+        멤버
+    }
+
+    public enum CardKeywords
+    {
+        Default,
+        Charge,       // 돌진
+        Rush,         // 속공
+        Taunt,        // 도발
+        DivineShield, //천보
+        Poisonous,    // 독성
+        Stealth,      // 은신
+        Lifesteal,    // 생흡
+        Windfury,     // 질풍
+    }
+
+    public enum TargetRule
+    {
+        None,
+
+        // --- 단일 지정 (플레이어가 직접 클릭해야 함) ---
+        Target_All,                 // 모든 캐릭터 중 하나 지정 
+        Target_Minion,              // 모든 하수인 중 하나 지정
+        Target_Enemy_All,           // 적 캐릭터 중 하나 지정
+        Target_Enemy_Minion,        // 적 하수인 중 하나 지정
+        Target_Enemy_Leader,        // 적 영웅(명치) 지정 
+        Target_Friend_All,          // 아군 캐릭터 중 하나 지정
+        Target_Friend_Minion,       // 아군 하수인 중 하나 지정
+        Target_Friend_Leader,       // 아군 영웅 지정 
+
+        // --- 광역 / 자동 (클릭 불필요, 범위 지정) ---
+        All_Characters,             // 모든 캐릭터 
+        All_Minions,                // 모든 하수인
+        All_Enemies,                // 모든 적
+        All_Enemy_Minions,          // 모든 적 하수인
+        All_Friends,                // 모든 아군
+        All_Friendly_Minions,       // 모든 아군 하수인
+
+        Random,                     // 랜덤
+
+        Self                        // 자기 자신
+    }
+
+    public enum CardRarity
+    {
+        common, 
+        rare, 
+        epic, 
+        legendary
+
+    }
+
+    public enum CardExpansion
+    {
+        기본,
+    }
+
+    public enum CardCondition
+    {
+        NONE,
+        TRIBE,
+        HAS_KEYWORD,
+        CARD_ID,
+        CARD_TYPE,
+        COST_LESS,
+        COST_MORE,
+        ATTACK_MORE,
+        ATTACK_LESS,
+        HEALTH_MORE,
+        HEALTH_LESS
+    }
+
     // ==================================================================
     // 1. 데이터 모델 (GameCard, GameEntity)
     // ==================================================================
@@ -26,19 +120,19 @@ namespace GameServer
         public int OriginalCost { get; private set; }
         public int OriginalAttack { get; private set; }
         public int OriginalHealth { get; private set; }
-        public List<string> OriginalKeywords { get; private set; }
+        public List<CardKeywords>? OriginalKeywords { get; private set; }
 
-        public string Type { get; private set; }   // "Minion", "Spell", "Member" 등
-        public string Class { get; private set; }  // 직업
-        public string Tribe { get; private set; }  // 종족 (강도단 등)
-        public string TargetRule { get; private set; } // 타겟팅 규칙
+        public CardType? Type;
+        public CardClass? Class { get; private set; }  // 직업
+        public CardTribe? Tribe { get; private set; }  // 종족 (강도단 등)
+        public TargetRule TargetRule { get; private set; } // 타겟팅 규칙
         public List<ServerEffectData> Effects { get; private set; } // 특수 효과 목록
 
         // --- 현재 스탯 (게임 중 버프/너프에 의해 변하는 값) ---
         public int CurrentCost { get; set; }
         public int CurrentAttack { get; set; }
         public int CurrentHealth { get; set; }
-        public List<string> CurrentKeywords { get; set; }
+        public List<CardKeywords> CurrentKeywords { get; set; }
 
         // [생성자 1] 일반 카드 생성 (DB에서 데이터 로드)
         public GameCard(string cardId, string instanceId)
@@ -55,28 +149,21 @@ namespace GameServer
                 OriginalCost = data.Cost;
                 OriginalAttack = data.AttackValue;
                 OriginalHealth = data.HealthValue;
-                OriginalKeywords = data.Keywords != null ? new List<string>(data.Keywords) : new List<string>();
+                OriginalKeywords = data.Keywords != null ? new List<CardKeywords>(data.Keywords) : new List<CardKeywords>();
                 
-                Type = data.CardType ?? "Unknown";
-                Class = data.Class ?? "Neutral";
-                Tribe = data.Tribe ?? "None";
-                TargetRule = data.TargetRule ?? "None";
+                Type = data.CardType ?? CardType.UNKNOWN;
+                Class = data.Class ?? CardClass.Gangzi;
+                Tribe = data.Tribe ?? CardTribe.강도단;
+                TargetRule = data.CardTargetRule ?? TargetRule.None;
                 Effects = data.GetParsedEffects();
-
-                // 타입 자체를 키워드로 추가 (로직 처리 편의성)
-                if (!string.IsNullOrEmpty(Type))
-                {
-                    string typeUpper = Type.ToUpper();
-                    if (!OriginalKeywords.Contains(typeUpper)) OriginalKeywords.Add(typeUpper);
-                }
             }
             else
             {
                 // DB에 없는 카드일 경우 (에러 방지용 기본값)
                 Console.WriteLine($"[GameCard] ⚠️ DB에서 카드 데이터를 찾을 수 없습니다: {cardId}");
                 OriginalCost = 1; OriginalAttack = 1; OriginalHealth = 1;
-                Type = "Minion"; Class = "Neutral"; Tribe = "None"; TargetRule = "None";
-                OriginalKeywords = new List<string> { "MINION" };
+                Type = CardType.하수인; Class = CardClass.Gangzi; Tribe = CardTribe.무소속; TargetRule = TargetRule.None;
+                OriginalKeywords = new List<CardKeywords> { CardKeywords.Default };
                 Effects = new List<ServerEffectData>();
             }
 
@@ -84,11 +171,11 @@ namespace GameServer
             CurrentCost = OriginalCost;
             CurrentAttack = OriginalAttack;
             CurrentHealth = OriginalHealth;
-            CurrentKeywords = new List<string>(OriginalKeywords);
+            CurrentKeywords = new List<CardKeywords>(OriginalKeywords);
         }
 
         // [생성자 2] 영웅(Leader) 카드 생성 (코드에서 직접 생성)
-        public GameCard(string instanceId, string playerClass, int health = 30)
+        public GameCard(string instanceId, CardClass playerClass, CardTribe tribe, int health = 30)
         {
             CardId = $"LEADER_{playerClass}";
             InstanceId = instanceId;
@@ -96,18 +183,18 @@ namespace GameServer
             OriginalCost = 0;
             OriginalAttack = 0;
             OriginalHealth = health;
-            OriginalKeywords = new List<string> { "HERO" };
+            OriginalKeywords = new List<CardKeywords> { CardKeywords.Default };
 
-            Type = "Hero";
+            Type = CardType.READER;
             Class = playerClass;
-            Tribe = "None";
-            TargetRule = "None";
+            Tribe = tribe;
+            TargetRule = TargetRule.None;
             Effects = new List<ServerEffectData>();
 
             CurrentCost = OriginalCost;
             CurrentAttack = OriginalAttack;
             CurrentHealth = OriginalHealth;
-            CurrentKeywords = new List<string>(OriginalKeywords);
+            CurrentKeywords = new List<CardKeywords>(OriginalKeywords);
         }
 
         // 클라이언트에게 보낼 데이터(CardInfo)로 변환
@@ -141,8 +228,8 @@ namespace GameServer
         public int MaxHealth { get; set; }
         public bool CanAttack { get; set; }   // 이번 턴에 공격 가능한가?
         public bool HasAttacked { get; set; } // 이번 턴에 이미 공격했는가?
-        public List<string> Keywords { get; set; }
-        public string Tribe { get; set; }
+        public List<CardKeywords>? Keywords { get; set; }
+        public CardTribe? Tribe { get; set; }
         public int Position { get; set; }
         public bool IsMember { get; set; }
 
@@ -156,12 +243,12 @@ namespace GameServer
             Attack = sourceCard.CurrentAttack;
             Health = sourceCard.CurrentHealth;
             MaxHealth = sourceCard.CurrentHealth;
-            Keywords = new List<string>(sourceCard.CurrentKeywords);
+            Keywords = new List<CardKeywords>(sourceCard.CurrentKeywords);
             Tribe = sourceCard.Tribe; 
             
             // 속공(Rush)이나 돌진(Charge)이 있으면 바로 공격 가능
-            bool hasCharge = Keywords.Contains("CHARGE");
-            bool hasRush = Keywords.Contains("RUSH");
+            bool hasCharge = Keywords.Contains(CardKeywords.Charge);
+            bool hasRush = Keywords.Contains(CardKeywords.Rush);
 
             //CanAttack = hasCharge || hasRush; 
             CanAttack = true; // [테스트용]
@@ -283,6 +370,7 @@ namespace GameServer
         
     }
 
+
     // ==================================================================
     // 2. GameState 클래스 (핵심 로직 엔진)
     // ==================================================================
@@ -313,6 +401,8 @@ namespace GameServer
         private readonly object _lock = new object();        // 멀티스레드 환경에서의 데이터 안전을 위한 락 객체
         private bool _isGameStarted = false;                // 게임 루프 시작 여부
 
+        private long _turnEndTime = 0;                      // 턴 제한 시간
+
         // 멀리건 결정을 저장 (양쪽 모두 완료될 때까지 대기용)
         private readonly Dictionary<string, C_MulliganDecision?> _mulliganDecisions = new Dictionary<string, C_MulliganDecision?>();
         
@@ -323,7 +413,7 @@ namespace GameServer
         /// <summary>
         /// (신규) 이벤트를 로그에 기록합니다.
         /// </summary>
-        public void LogEvent(string type, int sourceId, int targetId = 0, int val = 0, string? strVal = null, EntityData? entityData = null)
+        public void LogEvent(GameEventType type, int sourceId, int targetId = 0, int val = 0, string? strVal = null, EffectTriggerType effectTriggerType = EffectTriggerType.NONE, EntityData? entityData = null)
         {
             _eventBuffer.Add(new GameEvent
             {
@@ -332,6 +422,7 @@ namespace GameServer
                 targetEntityId = targetId,
                 value = val,
                 stringValue = strVal,
+                triggerType = effectTriggerType,
                 entityData = entityData,
             });
         }
@@ -340,18 +431,33 @@ namespace GameServer
          private List<GameLogEvent> _actionLogs = new List<GameLogEvent>();
          // 방송국(이벤트) 설립
         public event Action<string, string>? OnCardPlayed;    // 누가, 무슨 카드를 냈는가?
-        public event Action<string, string, int>? OnAttacked; // 누가, 누구를, 데미지 몇으로 공격했는가?
+        public event Action<string, string>? OnAttacked; // 누가, 누구를, 데미지 몇으로 공격하려 했는가?
+        public event Action<string, string, int>? ApllyAttacked; // 누가, 누구를, 데미지 몇으로 공격했는가?
         
 
         public GameState(GameRoom room, GamePlayer playerA, GamePlayer playerB)
         {
             _room = room;
             
-            // 1. 각 플레이어의 영웅 개체 생성 (기본 체력 30)
-            GameCard leaderCardA = new GameCard("Leader_A_Instance", playerA.Deck?.deckClass ?? "Neutral", 30);
+            // --- 1. 플레이어 A 영웅 개체 생성 ---
+            // 문자열인 직업(deckClass)을 CardClass Enum으로 안전하게 변환
+            CardClass classA = CardClass.Gangzi; // 파싱 실패 시 기본 직업
+            if (Enum.TryParse<CardClass>(playerA.Deck?.deckClass, true, out var parsedClassA))
+            {
+                classA = parsedClassA;
+            }
+            // (InstanceId, 직업 Enum, 종족 Enum, 체력) 순으로 전달
+            GameCard leaderCardA = new GameCard("Leader_A_Instance", classA, CardTribe.무소속, 30);
             GameEntity leaderA = new GameEntity(1, leaderCardA, playerA.Uid);
-            
-            GameCard leaderCardB = new GameCard("Leader_B_Instance", playerB.Deck?.deckClass ?? "Neutral", 30);
+
+
+            // --- 2. 플레이어 B 영웅 개체 생성 ---
+            CardClass classB = CardClass.Gangzi;
+            if (Enum.TryParse<CardClass>(playerB.Deck?.deckClass, true, out var parsedClassB))
+            {
+                classB = parsedClassB;
+            }
+            GameCard leaderCardB = new GameCard("Leader_B_Instance", classB, CardTribe.무소속, 30);
             GameEntity leaderB = new GameEntity(2, leaderCardB, playerB.Uid);
 
             // 2. 전역 개체 목록에 등록 (ID 1, 2번은 영웅 고정)
@@ -388,8 +494,13 @@ namespace GameServer
                 AddLog(playerName, "PLAY_CARD", $"{playerName}이(가) [{cardName}]을(를) 사용했습니다.");
             };
 
+            // 공격시도 했을때 알아서 로그 작성
+            this.OnAttacked += (attackerName, targetName) => {
+                AddLog(attackerName, "ATTACK", $"{attackerName}이(가) {targetName}에게 공격을 시도합니다!");
+            };
+
             // 공격했을 때 알아서 로그 작성
-            this.OnAttacked += (attackerName, targetName, damage) => {
+            this.ApllyAttacked += (attackerName, targetName, damage) => {
                 AddLog(attackerName, "ATTACK", $"{attackerName}이(가) {targetName}에게 {damage}의 피해를 입혔습니다!");
             };
         }
@@ -399,33 +510,84 @@ namespace GameServer
         /// </summary>
         public async Task HandlePlayerActionAsync(string senderUid, string messageJson)
         {
+            // ==========================================
+            // [신규] 1. 디버그 액션 우선 처리
+            // JSON 문자열에 "debugAction" 키가 있다면 디버그 파이프라인으로 보냅니다.
+            // ==========================================
+            if (messageJson.Contains("\"debugAction\""))
+            {
+                var debugActionBase = JsonConvert.DeserializeObject<BaseDebugAction>(messageJson);
+                if (debugActionBase != null && debugActionBase.debugAction != DebugAction.NONE)
+                {
+                    await DispatchDebugActionAsync(senderUid, debugActionBase.debugAction, messageJson);
+                    return; // 디버그 처리를 했으므로 일반 로직은 타지 않고 종료
+                }
+            }
+
+            // ==========================================
+            // 2. 기존 상용 게임 액션 처리
+            // ==========================================
             BaseGameAction? baseAction = null;
             try { baseAction = JsonConvert.DeserializeObject<BaseGameAction>(messageJson); } catch { return; }
             if (baseAction == null) return;
-            
+
+            // ... (기존 Mulligan / Main Phase 검증 코드 동일하게 유지) ...
             if (_currentPhase == "Mulligan")
             {
-                // 멀리건 페이즈: 턴에 관계없이 각자 전송 가능
                 PlayerState currentPlayer = GetPlayerState(_currentTurnPlayerUid);
-                
-                await DispatchActionAsync(senderUid, baseAction.action!, messageJson);
-                
+                await DispatchActionAsync(senderUid, GameActionType.MULLIGAN_DECISION, messageJson);
             }
             else
             {
-                // 메인 게임 중: 턴 주인인지 확인
                 PlayerState turnOwner = GetPlayerState(_currentTurnPlayerUid);
+                await DispatchActionAsync(senderUid, baseAction.action, messageJson);
+            }
+        }
 
-                // 유저의 턴이면 보낸 사람 본인의 UID로 실행
-                await DispatchActionAsync(senderUid, baseAction.action!, messageJson);
-                
+        /// <summary>
+        /// [신규] 디버그 전용 라우팅(Dispatch) 함수
+        /// </summary>
+        private async Task DispatchDebugActionAsync(string uid, DebugAction debugAction, string json)
+        {
+            switch (debugAction)
+            {
+                // ==========================================
+                // 특정 카드 드로우 요청 처리
+                // ==========================================
+                case DebugAction.SpecificCardDraw:
+                    var drawReq = JsonConvert.DeserializeObject<C_DebugSpecificCardDraw>(json);
+                    if (drawReq != null && !string.IsNullOrEmpty(drawReq.targetCardId))
+                    {
+                        // 이전에 만들어두신 카드를 뽑는 함수 호출
+                        await DrawSpecificCardFromDeckAsync(uid, drawReq.targetCardId);
+                    }
+                    break;
+                // ==========================================
+                // 덱 정보 요청 처리
+                // ==========================================
+                case DebugAction.RequestDeckInfo:
+                    PlayerState player = GetPlayerState(uid);
+                    
+                    // 1. 현재 덱에 있는 카드들을 CardInfo 리스트로 변환
+                    List<CardInfo> currentDeckInfo = player.Deck.Select(c => c.ToCardInfo()).ToList();
+
+                    // 2. 응답 패킷 생성
+                    var responseMsg = new S_DebugResponseDeckInfo
+                    {
+                        debugAction = DebugAction.ResponseDeckInfo,
+                        deckCards = currentDeckInfo
+                    };
+
+                    // 3. 요청한 클라이언트에게만 전송
+                    await _room.SendMessageToPlayerAsync(player.PlayerRef, JsonConvert.SerializeObject(responseMsg));
+                    break;
             }
         }
 
         /// <summary>
         /// 검증된 UID와 액션 종류에 따라 실제 로직 함수를 호출합니다.
         /// </summary>
-        private async Task DispatchActionAsync(string uid, string action, string json)
+        private async Task DispatchActionAsync(string uid, GameActionType action, string json)
         {
             // 턴 주인이 아닌데 멀리건 페이즈도 아니라면 무시
             if (_currentPhase != "Mulligan" && uid != _currentTurnPlayerUid) 
@@ -435,18 +597,18 @@ namespace GameServer
 
             switch (action)
             {
-                case "MULLIGAN_DECISION": // 멀리건 결정
+                case GameActionType.MULLIGAN_DECISION: // 멀리건 결정
                     var mul = JsonConvert.DeserializeObject<C_MulliganDecision>(json);
                     if (mul != null) await ProcessMulliganDecisionAsync(uid, mul);
                     break;
-                case "END_TURN":          // 턴 종료
+                case GameActionType.END_TURN:          // 턴 종료
                     await ProcessEndTurnAsync(uid);
                     break;
-                case "PLAY_CARD":        // 카드 내기
+                case GameActionType.PLAY_CARD:        // 카드 내기
                     var play = JsonConvert.DeserializeObject<C_PlayCard>(json);
                     if (play != null) await ProcessPlayCardAsync(uid, play);
                     break;
-                case "ATTACK":           // 공격 명령
+                case GameActionType.ATTACK:           // 공격 명령
                     var atk = JsonConvert.DeserializeObject<C_Attack>(json);
                     if (atk != null) await ProcessAttackAsync(uid, atk);
                     break;
@@ -481,7 +643,7 @@ namespace GameServer
             // 4. 정보 전송 (로컬 함수 사용으로 가독성 개선)
             async Task SendInfo(PlayerState p, List<CardInfo> hand) {
                 long endTime = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 30;
-                var msg = new S_MulliganInfo { action = "MULLIGAN_INFO", cardsToMulligan = hand, mulliganEndTime = endTime };
+                var msg = new S_MulliganInfo { action = GameActionType.MULLIGAN_INFO, cardsToMulligan = hand, mulliganEndTime = endTime };
                 await _room.SendMessageToPlayerAsync(p.PlayerRef, JsonConvert.SerializeObject(msg));
             }
 
@@ -541,7 +703,7 @@ namespace GameServer
             // 4. 상대방에게 나의 멀리건 완료 상태(몇 장 바꿨는지)를 알림
             var statusMsg = new S_OpponentMulliganStatus
             {
-                action = "OPPONENT_MULLIGAN_STATUS",
+                action = GameActionType.OPPONENT_MULLIGAN_STATUS,
                 opponentUid = senderUid,
                 replacedIndices = replacedIndices,
                 replacedCount = replacedIndices.Count,
@@ -578,8 +740,8 @@ namespace GameServer
             var handB = _playerB.Hand.Select(c => c.ToCardInfo()).ToList();
 
             // 양쪽 플레이어에게 최종 손패와 함께 게임 시작을 알림
-            await _room.SendMessageToPlayerAsync(_playerA.PlayerRef, JsonConvert.SerializeObject(new S_GameReady { action = "GAME_READY", firstPlayerUid = _firstPlayerUid, finalHand = handA, enermyfinalHand = handB }));
-            await _room.SendMessageToPlayerAsync(_playerB.PlayerRef, JsonConvert.SerializeObject(new S_GameReady { action = "GAME_READY", firstPlayerUid = _firstPlayerUid, finalHand = handB, enermyfinalHand = handA }));
+            await _room.SendMessageToPlayerAsync(_playerA.PlayerRef, JsonConvert.SerializeObject(new S_GameReady { action = GameActionType.GAME_READY, firstPlayerUid = _firstPlayerUid, finalHand = handA, enermyfinalHand = handB }));
+            await _room.SendMessageToPlayerAsync(_playerB.PlayerRef, JsonConvert.SerializeObject(new S_GameReady { action = GameActionType.GAME_READY, firstPlayerUid = _firstPlayerUid, finalHand = handB, enermyfinalHand = handA }));
 
             await Task.Delay(1500); // 연출을 위한 잠시 대기
             await StartTurnAsync(_firstPlayerUid); // 선공 플레이어 턴 시작
@@ -596,7 +758,7 @@ namespace GameServer
 
             // 1. Standby 페이즈 알림
             _currentPhase = "Standby";
-            var phaseMsg = JsonConvert.SerializeObject(new S_PhaseStart { action="PHASE_START", phase="Standby", TurnPlayerUid=_currentTurnPlayerUid });
+            var phaseMsg = JsonConvert.SerializeObject(new S_PhaseStart { action=GameActionType.PHASE_START, phase = GamePhase.STANDBY, TurnPlayerUid=_currentTurnPlayerUid });
             await _room.SendMessageToPlayerAsync(p.PlayerRef, phaseMsg);
             await _room.SendMessageToPlayerAsync(op.PlayerRef, phaseMsg);
 
@@ -611,15 +773,16 @@ namespace GameServer
             _currentPhase = "Draw";
             GameCard? drawnCard = p.DrawCard();
             // 드로우 카드 전송
-            await _room.SendMessageToPlayerAsync(p.PlayerRef, JsonConvert.SerializeObject(new S_PhaseStart {TurnPlayerUid = _currentTurnPlayerUid, action="PHASE_START", phase="Draw", drawnCard=drawnCard?.ToCardInfo() }));
-            await _room.SendMessageToPlayerAsync(op.PlayerRef, JsonConvert.SerializeObject(new S_PhaseStart {TurnPlayerUid = _currentTurnPlayerUid, action="PHASE_START", phase="Draw", drawnCard=drawnCard?.ToCardInfo() }));
+            await _room.SendMessageToPlayerAsync(p.PlayerRef, JsonConvert.SerializeObject(new S_PhaseStart {TurnPlayerUid = _currentTurnPlayerUid, action=GameActionType.PHASE_START, phase=GamePhase.DRAW, drawnCard=drawnCard?.ToCardInfo() }));
+            await _room.SendMessageToPlayerAsync(op.PlayerRef, JsonConvert.SerializeObject(new S_PhaseStart {TurnPlayerUid = _currentTurnPlayerUid, action=GameActionType.PHASE_START, phase=GamePhase.DRAW, drawnCard=null }));
+
 
             await Task.Delay(1000);
 
             // 4. Main 페이즈 시작 (실제 플레이 타임, 60초 제한)
             _currentPhase = "Main";
-            long turnEndTime = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 60; 
-            var mainMsg = new S_PhaseStart { action = "PHASE_START", phase = "Main", turnEndTime = turnEndTime };
+            long _turnEndTime  = DateTimeOffset.UtcNow.ToUnixTimeSeconds() + 60; 
+            var mainMsg = new S_PhaseStart { action = GameActionType.PHASE_START, phase = GamePhase.MAIN, turnEndTime = _turnEndTime  };
             
             await _room.SendMessageToPlayerAsync(p.PlayerRef, JsonConvert.SerializeObject(mainMsg));
             await _room.SendMessageToPlayerAsync(op.PlayerRef, JsonConvert.SerializeObject(mainMsg));
@@ -645,7 +808,7 @@ namespace GameServer
         /// </summary>
         private async Task BroadcastManaUpdate(PlayerState p, PlayerState op)
         {
-            var manaMsg = new S_UpdateMana { action="UPDATE_MANA", ownerUid=p.Uid, currentMana=p.CurrentMana, maxMana=p.MaxMana };
+            var manaMsg = new S_UpdateMana { action=GameActionType.UPDATE_MANA, ownerUid=p.Uid, currentMana=p.CurrentMana, maxMana=p.MaxMana };
             string json = JsonConvert.SerializeObject(manaMsg);
             await _room.SendMessageToPlayerAsync(p.PlayerRef, json);
             await _room.SendMessageToPlayerAsync(op.PlayerRef, json);
@@ -659,7 +822,7 @@ namespace GameServer
             if (senderUid != _currentTurnPlayerUid) return; // 내 턴이 아니면 무시
             
             _currentPhase = "End";
-            var msg = JsonConvert.SerializeObject(new S_PhaseStart { action="PHASE_START", phase="End" });
+            var msg = JsonConvert.SerializeObject(new S_PhaseStart { action=GameActionType.PHASE_START, phase=GamePhase.END });
             await _room.SendMessageToPlayerAsync(_playerA.PlayerRef, msg);
             await _room.SendMessageToPlayerAsync(_playerB.PlayerRef, msg);
             
@@ -673,6 +836,53 @@ namespace GameServer
         // ------------------------------------------------------------------
         // [Phase 3] 전투 및 카드 플레이 로직
         // ------------------------------------------------------------------
+
+            /// <summary>
+    /// [테스트 전용] 덱에서 특정 카드를 찾아 맨 위(마지막)로 올린 후 즉시 드로우합니다.
+    /// </summary>
+    /// <param name="playerUid">카드를 뽑을 플레이어의 Uid</param>
+    /// <param name="targetCardId">뽑고 싶은 카드의 원본 ID (예: "Fireball_001")</param>
+    public async Task DrawSpecificCardFromDeckAsync(string playerUid, string targetCardId)
+    {
+        // 1. 대상 플레이어의 상태 객체를 가져옵니다 [2].
+        PlayerState currentPlayer = GetPlayerState(_currentTurnPlayerUid);
+        PlayerState player = GetPlayerState(playerUid);
+
+        // 2. 덱에서 요청한 카드가 있는지 찾습니다.
+        GameCard? targetCard = player.Deck.FirstOrDefault(c => c.CardId == targetCardId);
+
+        if (targetCard != null)
+        {
+            // 3. 덱에서 해당 카드를 제거한 뒤, 맨 뒤(맨 위)로 다시 추가합니다 [1].
+            player.Deck.Remove(targetCard);
+            player.Deck.Add(targetCard);
+
+            // 4. 플레이어의 드로우 로직을 실행합니다 (내부적으로 맨 끝 카드를 손패로 가져갑니다) [1].
+            GameCard? drawnCard = player.DrawCard();
+
+            if (drawnCard != null)
+            {
+                Console.WriteLine($"[GameState - Cheat] {playerUid}가 덱에서 '{targetCardId}'를 강제 드로우했습니다.");
+
+                // 5. (중요) 턴 중간에 강제로 카드를 뽑은 경우, 클라이언트(유니티) 화면에도 카드가 
+                // 보이도록 패킷을 전송해 주어야 합니다. 
+                // (기존 Draw Phase에서 사용하는 메시지 구조를 활용) [3]
+                var drawMsg = new S_PhaseStart 
+                { 
+                    TurnPlayerUid = playerUid, 
+                    action = GameActionType.PHASE_START, 
+                    phase = GamePhase.DRAW, 
+                    drawnCard = drawnCard.ToCardInfo() 
+                };
+                
+                await _room.SendMessageToPlayerAsync(player.PlayerRef, JsonConvert.SerializeObject(drawMsg));
+            }
+        }
+        else
+        {
+            Console.WriteLine($"[GameState - Cheat] ❌ {playerUid}의 덱에 '{targetCardId}' 카드가 존재하지 않습니다.");
+        }
+    }
 
         /// <summary>
         /// 손에 있는 카드를 필드에 내거나 사용하는 로직입니다.
@@ -692,8 +902,8 @@ namespace GameServer
             }
 
             // 2. 하수인 또는 멤버인지 확인
-            bool isUnit = card.Type == "Minion" || card.Type == "하수인" || card.Type == "Member" || card.Type == "멤버";
-            bool isMember = (card.Type == "멤버" || card.Type == "Member");
+            bool isUnit = card.Type == CardType.하수인 || card.Type == CardType.멤버;
+            bool isMember = card.Type == CardType.멤버;
             GameEntity?[] targetZone = isMember ? p.MemberZone : p.Field;
 
             if (isUnit)
@@ -711,7 +921,7 @@ namespace GameServer
                 sourceEntity.Position = action.position;
                 sourceEntity.IsMember = isMember;
                 
-                LogEvent("SUMMON", sourceEntity.EntityId, 0, action.position, card.CardId, sourceEntity.ToEntityData());
+                LogEvent(GameEventType.SUMMON, sourceEntity.EntityId, 0, action.position, card.CardId, EffectTriggerType.ON_PLAY, sourceEntity.ToEntityData());
                 _allEntities.Add(eid, sourceEntity);
                 targetZone[action.position] = sourceEntity;
                 AddPendingUpdate(sourceEntity); // 클라이언트에게 알리기 위해 추가
@@ -723,22 +933,22 @@ namespace GameServer
                     _allEntities.TryGetValue(action.targetEntityId, out battlecryTarget);
                 }
                 // 타겟 지정 여부와 무관하게 효과가 발동한다는 연출을 띄우기 위해 이벤트 기록
-                LogEvent("EFFECT_TRIGGER", sourceEntity.EntityId, action.targetEntityId, 0, "ON_PLAY");
+                LogEvent(GameEventType.EFFECT_TRIGGER, sourceEntity.EntityId, action.targetEntityId, 0, null, EffectTriggerType.ON_PLAY);
 
-                await _effectProcessor.ExecuteEffectsAsync(card, sourceEntity, battlecryTarget, "ON_PLAY", senderUid);
+                await _effectProcessor.ExecuteEffectsAsync(card, sourceEntity, battlecryTarget, EffectTriggerType.ON_PLAY, senderUid);
             }
 
             // 7. 결과 성공 통보 및 필드 상태 브로드캐스트
-            await _room.SendMessageToPlayerAsync(p.PlayerRef, JsonConvert.SerializeObject(new S_PlayCardSuccess { action = "PLAY_CARD_SUCCESS", serverInstanceId = card.InstanceId }));
+            await _room.SendMessageToPlayerAsync(p.PlayerRef, JsonConvert.SerializeObject(new S_PlayCardSuccess { action = GameActionType.PLAY_CARD_SUCCESS, serverInstanceId = card.InstanceId }));
             await BroadcastUpdatesAsync(senderUid);
             
             // 상대방에게는 '누가 어떤 카드를 냈다'는 연출용 메시지 전송
-            await _room.SendMessageToPlayerAsync(op.PlayerRef, JsonConvert.SerializeObject(new S_OpponentPlayCard { action="OPPONENT_PLAY_CARD", cardPlayed=card.ToCardInfo(), targetEntityId=action.targetEntityId }));
+            await _room.SendMessageToPlayerAsync(op.PlayerRef, JsonConvert.SerializeObject(new S_OpponentPlayCard { action=GameActionType.OPPONENT_PLAY_CARD, cardPlayed=card.ToCardInfo(), targetEntityId=action.targetEntityId }));
             
             // 8. 카드 효과 등으로 인해 죽은 개체가 있는지 확인
             await ProcessDeathsAsync();
 
-            OnCardPlayed!(p.Uid, card.CardId);
+            OnCardPlayed!.Invoke(p.Uid, card.CardId);
         }
 
         /// <summary>
@@ -755,13 +965,13 @@ namespace GameServer
             if(att.OwnerUid != senderUid || !att.CanAttack || att.HasAttacked) return;
 
             // 이벤트 로그 저장
-            LogEvent("ATTACK", att.EntityId, def.EntityId);
+            LogEvent(GameEventType.ATTACK, att.EntityId, def.EntityId);
 
             // 공격 기회 소모 및 실제 전투 계산
             att.HasAttacked = true;
             await ResolveCombatAsync(att, def);
 
-            OnAttacked!(att.OwnerUid, def.OwnerUid, att.Attack);
+            ApllyAttacked?.Invoke(att.OwnerUid, def.OwnerUid, att.Attack);
             
             // 결과 브로드캐스트 및 사망 처리
             await BroadcastUpdatesAsync(senderUid);
@@ -776,7 +986,7 @@ namespace GameServer
             _pendingUpdates.Clear();
             // 서로의 공격력만큼 체력 차감
             ApplyDamage(def, att.Attack, att.EntityId);
-            ApplyDamage(att, def.Attack, def.Attack);
+            ApplyDamage(att, def.Attack, def.EntityId);
         }
 
         /// <summary>
@@ -786,8 +996,8 @@ namespace GameServer
         {
             if (amount <= 0) return;
             target.Health -= amount;
-            LogEvent("DAMAGE", sourceId, target.EntityId, amount);
-            OnAttacked!(sourceId.ToString(), target.EntityId.ToString(), amount);
+            LogEvent(GameEventType.DAMAGE, sourceId, target.EntityId, amount);
+            ApllyAttacked!(sourceId.ToString(), target.EntityId.ToString(), amount);
             AddPendingUpdate(target);
         }
         /// <summary>
@@ -800,7 +1010,7 @@ namespace GameServer
             int actualHeal = target.Health - oldHealth;
             Console.WriteLine($"[GameState] {target.EntityId} 회복 {actualHeal}");
             
-            if (actualHeal > 0) LogEvent("HEAL", sourceId, target.EntityId, actualHeal);
+            if (actualHeal > 0) LogEvent(GameEventType.HEAL, sourceId, target.EntityId, actualHeal);
             AddPendingUpdate(target);
         }
         /// <summary>
@@ -812,7 +1022,7 @@ namespace GameServer
             target.Health += healthBuff;
             target.MaxHealth += healthBuff; 
             
-            LogEvent("BUFF", sourceId, target.EntityId, attackBuff, healthBuff.ToString());
+            LogEvent(GameEventType.BUFF, sourceId, target.EntityId, attackBuff, healthBuff.ToString());
             AddPendingUpdate(target);
         }
 
@@ -832,11 +1042,11 @@ namespace GameServer
 
             foreach (var dead in deadEntities)
             {
-                LogEvent("DEATH", dead.EntityId);
+                LogEvent(GameEventType.DEATH, dead.EntityId);
                 
                 // 2. '죽음의 메아리(ON_DEATH)' 효과 실행
-                LogEvent("EFFECT_TRIGGER", dead.EntityId, 0, 0, "ON_DEATH");
-                await _effectProcessor.ExecuteEffectsAsync(dead.SourceCard, dead, null, "ON_DEATH", dead.OwnerUid);
+                LogEvent(GameEventType.EFFECT_TRIGGER, dead.EntityId, 0, 0, null, EffectTriggerType.ON_DEATH);
+                await _effectProcessor.ExecuteEffectsAsync(dead.SourceCard, dead, null, EffectTriggerType.ON_DEATH, dead.OwnerUid);
 
                 // 3. 서버 데이터 저장소에서 제거
                 _allEntities.Remove(dead.EntityId);
@@ -856,7 +1066,12 @@ namespace GameServer
             await BroadcastUpdatesAsync(_playerA.Uid); 
             
             // 7. 게임 종료 조건 확인 (영웅 사망 시)
-            if (_playerA.Leader.Health <= 0 || _playerB.Leader.Health <= 0)
+            if (_playerA.Leader.Health <= 0 && _playerB.Leader.Health <= 0)
+            {
+                await EndGameAsync("DRAW", "BOTH_LEADERS_KILLED");
+                return true;
+            }
+            else if (_playerA.Leader.Health <= 0 || _playerB.Leader.Health <= 0)
             {
                 string winner = _playerA.Leader.Health > 0 ? _playerA.Uid : _playerB.Uid;
                 await EndGameAsync(winner, "LEADER_KILLED");
@@ -904,7 +1119,7 @@ namespace GameServer
              // 1. 변경된 엔티티(하수인/영웅) 정보 전송
             var resolutionMsg = new S_ActionResolution
             {
-                action = "ACTION_RESOLUTION",
+                action = GameActionType.ACTION_RESOLUTION,
                 eventLog = [.. _eventBuffer], // 복사본 전달
                 finalStateUpdates = [.. _pendingUpdates]
             };
@@ -919,7 +1134,7 @@ namespace GameServer
             
 
              // 2. 현재 행동한 플레이어의 마나 정보 갱신 전송
-             var manaMsg = new S_UpdateMana { action = "UPDATE_MANA", ownerUid = p.Uid, currentMana = p.CurrentMana, maxMana = p.MaxMana };
+             var manaMsg = new S_UpdateMana { action = GameActionType.UPDATE_MANA, ownerUid = p.Uid, currentMana = p.CurrentMana, maxMana = p.MaxMana };
              string manaJson = JsonConvert.SerializeObject(manaMsg);
              await _room.SendMessageToPlayerAsync(_playerA.PlayerRef, manaJson);
              await _room.SendMessageToPlayerAsync(_playerB.PlayerRef, manaJson);
@@ -933,7 +1148,7 @@ namespace GameServer
             if(_isGameOver) return;
             _isGameOver = true;
             _currentPhase = "GameOver";
-            string json = JsonConvert.SerializeObject(new S_GameOver { action="GAME_OVER", winnerUid=winner, reason=reason });
+            string json = JsonConvert.SerializeObject(new S_GameOver { action=GameActionType.GAME_OVER, winnerUid=winner, reason=reason });
             await _room.SendMessageToPlayerAsync(_playerA.PlayerRef, json);
             await _room.SendMessageToPlayerAsync(_playerB.PlayerRef, json);
         }
@@ -941,33 +1156,60 @@ namespace GameServer
         // 대시보드 전용
         public class GameSnapshot
         {
-         public string CurrentTurnPlayerUid { get; set; } = "";
-          public string CurrentPhase { get; set; } = "";
-          public int PlayerAMana { get; set; }
-           public int PlayerBMana { get; set; }
-           public int PlayerAHealth { get; set; }
-          public int PlayerBHealth { get; set; }
-          public List<GameLogEvent>? Logs { get; set; }
-          // 필요하다면 필드의 하수인 개수나 액션 로그를 추가할 수 있습니다.
+            public string PlayerAUid { get; set; } = "";
+            public string PlayerBUid { get; set; } = "";
+            public string CurrentTurnPlayerUid { get; set; } = "";
+            public string CurrentPhase { get; set; } = "";
+            public int PlayerAMana { get; set; }
+            public int PlayerBMana { get; set; }
+            public int PlayerAHealth { get; set; }
+            public int PlayerBHealth { get; set; }
+            
+            // [신규] 턴 남은 시간
+            public long TurnEndTime { get; set; }
+
+            // [신규] 필드 상황 (5칸) 및 멤버존 (1칸)
+            public List<EntityData?> PlayerAField { get; set; } = new List<EntityData?>();
+            public List<EntityData?> PlayerBField { get; set; } = new List<EntityData?>();
+            public List<EntityData?> PlayerAMember { get; set; } = new List<EntityData?>();
+            public List<EntityData?> PlayerBMember { get; set; } = new List<EntityData?>();
+
+            // [신규] 손패 상황
+            public List<CardInfo> PlayerAHand { get; set; } = new List<CardInfo>();
+            public List<CardInfo> PlayerBHand { get; set; } = new List<CardInfo>();
+
+            public List<GameLogEvent>? Logs { get; set; }
         }
 
         // GameState 클래스 내부에 스냅샷 반환 메서드 추가
         public GameSnapshot GetSnapshot()
         {
-            // 스레드 안전성을 위해 lock 블록 안에서 중요 상태를 복사합니다.
             lock (_lock)
             {
                 return new GameSnapshot
                 {
+                    PlayerAUid = _playerA.Uid,
+                    PlayerBUid = _playerB.Uid,
                     CurrentTurnPlayerUid = _currentTurnPlayerUid,
                     CurrentPhase = _currentPhase ?? "Waiting",
                     PlayerAMana = _playerA.CurrentMana,
                     PlayerBMana = _playerB.CurrentMana,
                     PlayerAHealth = _playerA.Leader?.Health ?? 0,
                     PlayerBHealth = _playerB.Leader?.Health ?? 0,
+                    
+                    // 대시보드 타이머를 위한 시간 (임시로 현재시간+60초 등 페이즈별로 저장된 변수 활용 필요)
+                    TurnEndTime = _turnEndTime,
 
-                    Logs = _actionLogs.ToList()
-                    // Logs = _actionLogs.TakeLast(50).ToList() // 끝에서부터 최근 50개만 잘라서 전송
+                    // 엔티티 및 손패 데이터를 변환하여 전달
+                    PlayerAField = _playerA.Field.Select(e => e?.ToEntityData()).ToList(),
+                    PlayerBField = _playerB.Field.Select(e => e?.ToEntityData()).ToList(),
+                    PlayerAMember = _playerA.MemberZone.Select(e => e?.ToEntityData()).ToList(),
+                    PlayerBMember = _playerB.MemberZone.Select(e => e?.ToEntityData()).ToList(),
+                    
+                    PlayerAHand = _playerA.Hand.Select(c => c.ToCardInfo()).ToList(),
+                    PlayerBHand = _playerB.Hand.Select(c => c.ToCardInfo()).ToList(),
+
+                    Logs = _actionLogs.TakeLast(50).ToList()
                 };
             }
         }
