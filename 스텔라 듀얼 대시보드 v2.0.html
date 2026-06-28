@@ -131,7 +131,9 @@
                     <!-- 우측: 액션 로그 -->
                     <div class="col-span-3 glass-panel rounded-xl p-4 border border-gray-700 flex flex-col">
                         <h3 class="font-bold mb-2 text-sm">📜 이벤트 로그</h3>
-                        <div id="logContainer" class="flex-1 overflow-y-auto text-xs space-y-2 h-80"></div>
+                        <div id="logContainer" 
+                        class="bg-[#0f172a] border border-gray-700 rounded-lg p-4 h-64 max-h-64 overflow-y-auto space-y-2 font-mono text-sm relative" 
+                        style="max-height: 30rem; overflow-y: auto;">
                     </div>
                 </div>
             </div>
@@ -168,7 +170,7 @@
             document.getElementById('tooltip').innerHTML = "<div class='text-gray-400'>비어 있음</div>";
         } else {
             document.getElementById('tooltip').innerHTML = `
-                <div class='font-bold text-lg mb-1'>${entity.cardId}</div>
+                <div class='font-bold text-lg mb-1'>${entity.cardName || entity.cardId}</div>
                 <div class='text-sm text-gray-300'>공격력: <span class='text-yellow-400'>${entity.attack}</span></div>
                 <div class='text-sm text-gray-300'>체력: <span class='text-red-400'>${entity.health}</span> / ${entity.maxHealth}</div>
                 ${entity.canAttack ? "<div class='text-xs text-green-400 mt-1'>공격 가능</div>" : ""}
@@ -180,7 +182,7 @@
 
     function showCardTooltip(card) {
         document.getElementById('tooltip').innerHTML = `
-            <div class='font-bold text-lg mb-1'>${card.cardId}</div>
+            <div class='font-bold text-lg mb-1'>${card.cardName || card.cardId}</div>
             <div class='text-sm text-gray-300'>비용: <span class='text-blue-400'>${card.currentCost}</span></div>
             <div class='text-sm text-gray-300'>공격력: <span class='text-yellow-400'>${card.currentAttack}</span></div>
             <div class='text-sm text-gray-300'>체력: <span class='text-red-400'>${card.currentHealth}</span></div>
@@ -281,8 +283,8 @@
         document.getElementById('fieldA_Minions').innerHTML = htmlA;
 
         // 멤버 렌더링
-        document.getElementById('fieldB_Member').innerHTML = createSlotHTML(data.playerBMember ? data.playerBMember : null, true);
-        document.getElementById('fieldA_Member').innerHTML = createSlotHTML(data.playerAMember ? data.playerAMember : null, true);
+        document.getElementById('fieldB_Member').innerHTML = createSlotHTML(data.playerBMember && data.playerBMember ? data.playerBMember : null, true);
+        document.getElementById('fieldA_Member').innerHTML = createSlotHTML(data.playerAMember && data.playerAMember ? data.playerAMember : null, true);
 
         // 로그
         if (data.logs) {

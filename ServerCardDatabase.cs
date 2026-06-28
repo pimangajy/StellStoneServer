@@ -48,6 +48,34 @@ namespace GameServer
                         card.CardID = document.Id;
                     }
 
+                    // ====================================================================
+                    // [신규 추가] cards-gangzi-008 전용 상세 데이터 검증 로그
+                    // ====================================================================
+                    if (card.CardID == "cards-gangzi-008")
+                    {
+                        Console.WriteLine($"\n========== [DEBUG: {card.CardID} 데이터 검증] ==========");
+                        Console.WriteLine($"이름: {card.Name}, 코스트: {card.Cost}, 스탯: {card.Attack}/{card.Health}");
+                        Console.WriteLine($"원본 DB 효과 문자열(EffectsString): {card.EffectsString}");
+
+                        // 문자열이 어떻게 쪼개져서(파싱) 저장되는지 확인
+                        var parsedEffects = card.GetParsedEffects();
+                        Console.WriteLine($"파싱된 효과(Effect) 개수: {parsedEffects.Count}");
+
+                        for (int i = 0; i < parsedEffects.Count; i++)
+                        {
+                            var e = parsedEffects[i];
+                            Console.WriteLine($"[효과 {i + 1}]");
+                            Console.WriteLine($" - 발동시점(Trigger) : {e.Trigger}");
+                            Console.WriteLine($" - 효과종류(Effect)  : {e.EffectName}");
+                            Console.WriteLine($" - 타겟팅(Target)    : {e.Target}");
+                            Console.WriteLine($" - 수치(Value1/2)    : V1={e.Value1}, V2={e.Value2}");
+                            Console.WriteLine($" - 조건(Condition)   : {e.Condition} (값: {e.ConditionValue})");
+                            Console.WriteLine($" - 반복횟수(Count)   : {e.Count}");
+                        }
+                        Console.WriteLine("========================================================\n");
+                    }
+                    // ====================================================================
+
                     if (!_cardCache.ContainsKey(card.CardID))
                     {
                         _cardCache.Add(card.CardID, card);

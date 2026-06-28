@@ -33,6 +33,7 @@ namespace GameServer
         ATTACK,              // 공격 명령
         USE_MEMBER_ABILITY,  // 멤버 특수 능력 사용
         CONCEDE,             // 항복
+        MAKE_CHOICE,         // 클라이언트가 선택 결과를 보냄
 
         // ==========================================
         // 서버 -> 클라이언트 (S -> C) 메시지
@@ -48,6 +49,7 @@ namespace GameServer
         PLAY_CARD_SUCCESS,         // 카드 사용 성공
         PLAY_CARD_FAIL,            // 카드 사용 실패
         UPDATE_HAND_CARDS,         // 손패 카드 상태(비용, 스탯 등) 갱신
+        REQUEST_CHOICE,            // 서버가 클라이언트에게 선택을 요청함
         GAME_OVER,                 // 게임 종료
         ERROR                      // 서버 에러
     }
@@ -78,13 +80,14 @@ namespace GameServer
     /// </summary>
     public class CardInfo
     {
-        public string? cardId; // 카드 원본 ID (예: "Fireball_001")
-        public string? instanceId; // 이 게임에서 이 카드를 식별하는 고유 ID (예: "HandCard_123")
+        public string? cardId{ get; set; } // 카드 원본 ID (예: "Fireball_001")
+        public string? instanceId{ get; set; } // 이 게임에서 이 카드를 식별하는 고유 ID (예: "HandCard_123")
+        public string? cardName{ get; set; }
         
         // (신규) 손/덱 버프를 위한 '현재 상태' 필드
-        public int currentCost;   // 현재 비용 (버프/너프 적용됨)
-        public int currentAttack; // 현재 공격력 (하수인 전용)
-        public int currentHealth; // 현재 체력 (하수인 전용)
+        public int currentCost{ get; set; }   // 현재 비용 (버프/너프 적용됨)
+        public int currentAttack{ get; set; } // 현재 공격력 (하수인 전용)
+        public int currentHealth{ get; set; } // 현재 체력 (하수인 전용)
         // TODO: (고급) "enchantments" (부여된 효과 목록)를 추가할 수 있음
     }
 
@@ -94,14 +97,15 @@ namespace GameServer
     /// </summary>
     public class EntityData
     {
-        public int entityId; // 이 게임의 모든 개체를 식별하는 고유 ID (예: 1=A리더, 2=B리더, 101=A하수인, 201=B하수인)
-        public string? cardId; // 원본 카드 ID
-        public string? ownerUid; // 이 개체의 소유자
-        public int attack;
-        public int health;
-        public int maxHealth;
-        public bool canAttack; // '돌진'이 있거나, 턴 시작 시 true
-        public bool hasAttacked; // 이번 턴에 이미 공격했는지
+        public int entityId { get; set; } // 이 게임의 모든 개체를 식별하는 고유 ID (예: 1=A리더, 2=B리더, 101=A하수인, 201=B하수인)
+        public string? cardId { get; set; } // 원본 카드 ID
+        public string? cardName { get; set; }
+        public string? ownerUid { get; set; } // 이 개체의 소유자
+        public int attack{ get; set; }
+        public int health{ get; set; }
+        public int maxHealth{ get; set; }
+        public bool canAttack{ get; set; } // '돌진'이 있거나, 턴 시작 시 true
+        public bool hasAttacked{ get; set; } // 이번 턴에 이미 공격했는지
         
         // List<string>으로 키워드 관리
         // (예: ["TAUNT", "POISONOUS"])
@@ -109,6 +113,7 @@ namespace GameServer
 
         public int position; 
         public bool isMember;
+        public bool isLeader;
     }
 
     /// <summary>
@@ -144,7 +149,12 @@ namespace GameServer
         DEATH,            // 개체 사망
         EFFECT_TRIGGER,   // 특수 효과 발동 연출 (전투의 함성, 죽음의 메아리 등)
         SUMMON ,           // 하수인 소환
-        DRAW              // 카드를 뽑음
+        DRAW,              // 카드를 뽑음
+        BIND,             // 속박 (빙결 대체)
+        SILENCE,          // 침묵
+        FORCE_ATTACK,     // 강제 공격
+        GRANT_KEYWORD,    // 키워드 부여
+        MANA_MOD          // 마나 조작
     }
 
     /// <summary>
@@ -154,8 +164,14 @@ namespace GameServer
     {
         NONE = 0,
         ON_PLAY,          // 카드를 낼 때 발동 (전투의 함성)
-        ON_DEATH          // 사망 시 발동 (죽음의 메아리)
-        // 차후 턴 시작(ON_TURN_START), 턴 종료(ON_TURN_END) 등을 추가할 수 있습니다.
+        ON_DEATH,          // 사망 시 발동 (죽음의 메아리)
+        ON_TURN_START,     // 턴 시작 시
+        ON_TURN_END,       // 턴 종료 시
+        ON_ATTACK,        // 공격 시작 시
+        ON_DAMAGE,        // 데미지를 입었을떄
+        ON_HEAL,          // 회복했을떄
+        ON_DRAW,          // 드로우 했을때
+        ON_SUMMON,        // 소환할때
     }
 
     /// <summary>
@@ -251,6 +267,23 @@ namespace GameServer
     }
 
     /// <summary>
+    /// (C->S) 클라이언트가 서버의 선택 요구(REQUEST_CHOICE)에 응답할 때 사용합니다.
+    /// </summary>
+    public class C_MakeChoice : BaseGameAction
+    {
+        // action = GameActionType.MAKE_CHOICE
+
+        // 1. 토큰 소환 위치 등을 선택했을 경우의 값 (-1이면 선택안함)
+        public int selectedPosition { get; set; } = -1; 
+        
+        // 2. 발견(Discover) 등 특정 카드를 선택했을 경우의 값
+        public string? selectedCardId { get; set; }     
+        
+        // 3. 특정 하수인(타겟)을 선택했을 경우의 값 (-1이면 선택안함)
+        public int selectedEntityId { get; set; } = -1; 
+    }
+
+    /// <summary>
     /// (C->S) 플레이어가 '멤버'의 특수 능력을 사용합니다.
     /// </summary>
     public class C_UseMemberAbility : BaseGameAction
@@ -322,7 +355,11 @@ namespace GameServer
         public List<CardInfo>? finalHand; // 나의 최종 손패
 
         public List<CardInfo>? enermyfinalHand; // 적의 최종 손패
-        // TODO: 상대방 정보 (영웅, 이름 등)
+
+        // 나와 적의 리더(영웅) 정보
+        public EntityData? myLeader;
+        public EntityData? enemyLeader;
+
     }
 
     public enum GamePhase
@@ -379,13 +416,42 @@ namespace GameServer
     }
 
     /// <summary>
-/// (S->C) 내가 요청한 카드 내기가 서버에서 정상적으로 처리되었음을 알립니다.
-/// </summary>
-public class S_PlayCardSuccess : BaseGameAction
-{
-    // action = "PLAY_CARD_SUCCESS"
-    public string? serverInstanceId; // 서버에서 확인한 카드의 고유 ID
-}
+    /// (S->C) 게임 진행 중(효과 발동 중) 플레이어의 개입이 필요할 때 서버가 전송합니다.
+    /// </summary>
+    public class S_RequestChoice : BaseGameAction
+    {
+        // action = GameActionType.REQUEST_CHOICE
+
+        // 어떤 종류의 선택을 요구하는지 명시 (예: "POSITION", "DISCOVER_CARD", "TARGET")
+        public string? choiceType { get; set; } 
+        
+        // 선택해야 하는 개수 (기본 1)
+        public int count { get; set; } = 1;     
+
+        // (선택) 카드 발견 등 제한된 선택지가 있을 때 후보 목록을 보낼 수 있습니다.
+        public List<CardInfo>? availableOptions { get; set; } 
+
+        // ==========================================
+        // 유저 화면 UI에 띄워줄 안내 메세지
+        // ==========================================
+        public string? message { get; set; } 
+
+        //  이 선택을 요구하게 만든 주체(예: 방금 낸 하수인의 ID) 
+        // -> 클라이언트가 이 대상을 밝게 하이라이트 표시할 수 있음
+        public int sourceEntityId { get; set; } 
+        
+        // (선택) 무엇을 소환/사용할 것인지 명시 (예: "token-101")
+        public string? targetDataId { get; set; }
+    }
+
+    /// <summary>
+    /// (S->C) 내가 요청한 카드 내기가 서버에서 정상적으로 처리되었음을 알립니다.
+    /// </summary>
+    public class S_PlayCardSuccess : BaseGameAction
+    {
+        // action = "PLAY_CARD_SUCCESS"
+        public string? serverInstanceId; // 서버에서 확인한 카드의 고유 ID
+    }
 
     /// <summary>
     /// (S->C) 내가 요청한 카드 내기가 (규칙 위반으로) 실패했음을 알립니다.

@@ -166,6 +166,9 @@ namespace GameServer
                     {
                         effect.Count = 1; // 생략 시 기본값 1회
                     }
+
+                    // 위에서 만든 effect 객체를 리스트에 추가합니다.
+                    list.Add(effect);
                 }
             }
             catch { }

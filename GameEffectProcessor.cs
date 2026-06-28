@@ -61,10 +61,13 @@ namespace GameServer
                 
                 foreach (var target in targets)
                 {
-                    // (중요) 이미 죽은 대상은 효과를 받지 않음 (부활 등 예외 제외)
                     if (target.Health <= 0 && effect.EffectName != GameEventType.DEATH) continue;
 
-                    ApplyEffectLogic(effect, target, ownerUid);
+                    // 만약 이전 효과 처리 중 대기 상태(AWAITING)로 빠졌다면 남은 효과 실행 중단
+                    if (_gameState.CurrentPhase == "AWAITING_CHOICE") return;
+
+                    // await 추가
+                    await ApplyEffectLogic(effect, target, ownerUid, sourceEntity);
                 }
             }
         }
@@ -73,13 +76,28 @@ namespace GameServer
         // 2. 개별 효과 로직 (구현부)
         // ==================================================================
 
-        private void ApplyEffectLogic(ServerEffectData effect, GameEntity target, string ownerUid)
+        private async Task ApplyEffectLogic(ServerEffectData effect, GameEntity target, string ownerUid, GameEntity? sourceEntity)
         {
             switch (effect.EffectName)
             {
                 case GameEventType.DAMAGE:
-                    _gameState.ApplyDamage(target, effect.Value1);
-                    break;
+                    // [신규 추가] 이 효과의 타겟팅 룰이 '광역기(AoE)'인지 검사합니다.
+                bool isAoE = (effect.Target == TargetRule.All_Characters ||
+                            effect.Target == TargetRule.All_Minions ||
+                            effect.Target == TargetRule.All_Enemies ||
+                            effect.Target == TargetRule.All_Enemy_Minions ||
+                            effect.Target == TargetRule.All_Friends ||
+                            effect.Target == TargetRule.All_Friendly_Minions);
+
+                // 광역기가 아닐 때(단일 지정이거나 랜덤 타겟일 때)만 개별 투사체용 ATTACK 패킷을 생성합니다.
+                if (!isAoE)
+                {
+                    _gameState.LogEvent(GameEventType.ATTACK, sourceEntity!.EntityId, target.EntityId, 0, null, effect.Trigger);
+                }
+                
+                // 실제 데미지 적용은 광역/단일 상관없이 타겟별로 정상 처리됩니다.
+                _gameState.ApplyDamage(target, effect.Value1, sourceEntity!.EntityId, effect.Trigger);
+                break;
 
                 case GameEventType.HEAL:
                     _gameState.ApplyHeal(target, effect.Value1);
@@ -100,7 +118,57 @@ namespace GameServer
                     _gameState.ApplyDamage(target, 9999); // 즉사 처리
                     break;
 
-                // 추가: 소환(SUMMON), 침묵(SILENCE), 빙결(FREEZE) 등
+                case GameEventType.BIND: // 속박
+                _gameState.ApplyBind(target, effect.Value1);
+                break;
+
+                case GameEventType.SILENCE: // 침묵
+                    _gameState.ApplySilence(target, effect.Value1);
+                    break;
+
+                case GameEventType.GRANT_KEYWORD: // 키워드 부여 (ConditionValue에 부여할 키워드 문자열이 있다고 가정)
+                    if (!string.IsNullOrEmpty(effect.ConditionValue))
+                    {
+                        _gameState.GrantKeyword(target, effect.ConditionValue, effect.Value1);
+                    }
+                    break;
+
+                case GameEventType.MANA_MOD: // 마나 조작 (Value1에 증감 수치)
+                    _gameState.ApplyManaMod(target.OwnerUid, effect.Value1);
+                    break;
+
+                case GameEventType.FORCE_ATTACK: // 강제 공격
+                    // target이 효과에 지정된 개체(effect.Value1 등)를 강제로 공격하게 함
+                    // GameState의 ResolveCombatAsync와 ProcessDeathsAsync를 비동기로 호출해야 합니다.
+                    // (사전 타겟 검증 로직 추가 필요)
+                    // await _gameState.ResolveCombatAsync(target, 방어자개체);
+                    // await _gameState.ProcessDeathsAsync();
+                    break;
+
+                case GameEventType.SUMMON:
+                string targetCardId = effect.ConditionValue ?? "Token_001";
+                PlayerState opp = _gameState.GetPlayerState(ownerUid, true); // 상대방 정보
+
+                // 💡 Target_Friend_All이 여기에 포함되어야 클라이언트에게 위치 선택을 요구합니다!
+                if (effect.Target == TargetRule.Target_Friend_All || effect.Target == TargetRule.Target_All || effect.Target == TargetRule.Target_Minion)
+                {
+                    string message = $"아군 필드에 토큰({targetCardId})을 소환할 위치를 선택해 주세요.";
+                    await _gameState.RequestPlayerChoiceAsync(ownerUid, "POSITION", targetCardId, message, sourceEntity!.EntityId);
+                }
+                else if (effect.Target == TargetRule.Target_Enemy_All)
+                {
+                    string message = $"적 필드에 토큰({targetCardId})을 소환할 위치를 선택해 주세요.";
+                    await _gameState.RequestPlayerChoiceAsync(ownerUid, "POSITION_ENEMY", targetCardId, message, sourceEntity!.EntityId);
+                }
+                else if (effect.Target == TargetRule.All_Enemies)
+                {
+                    _gameState.SummonEntityByEffect(opp.Uid, targetCardId);
+                }
+                else
+                {
+                    _gameState.SummonEntityByEffect(ownerUid, targetCardId);
+                }
+                break;
             }
         }
 
@@ -116,9 +184,22 @@ namespace GameServer
 
             switch (targetRule)
             {
-                case TargetRule.All_Characters:
+                // ========================================================
+                // 1. 단일 지정 타겟 (플레이어가 지정한 대상을 그대로 사용)
+                // ========================================================
+                case TargetRule.Target_All:
+                case TargetRule.Target_Minion:
+                case TargetRule.Target_Enemy_All:
+                case TargetRule.Target_Enemy_Minion:
+                case TargetRule.Target_Friend_All:
+                case TargetRule.Target_Friend_Minion:
+                    // 클라이언트에서 넘겨준 타겟이 있으면 결과에 추가
                     if (manualTarget != null) results.Add(manualTarget);
                     break;
+
+                // ========================================================
+                // 2. 자동 고정 타겟
+                // ========================================================
                 case TargetRule.Self:
                     if (sourceEntity != null) results.Add(sourceEntity);
                     break;
@@ -128,23 +209,39 @@ namespace GameServer
                 case TargetRule.Target_Friend_Leader:
                     results.Add(me.Leader);
                     break;
-                case TargetRule.Target_Enemy_All:
+
+                // ========================================================
+                // 3. 광역 효과 타겟 (지정 없이 조건에 맞는 대상을 모두 긁어옴)
+                // ========================================================
+                case TargetRule.All_Characters:
+                    results.Add(me.Leader);
+                    results.AddRange(me.Field.Where(e => e != null)!);
+                    results.AddRange(me.MemberZone.Where(e => e != null)!);
                     results.Add(opp.Leader);
                     results.AddRange(opp.Field.Where(e => e != null)!);
                     results.AddRange(opp.MemberZone.Where(e => e != null)!);
-                    results.AddRange(opp.MemberZone!);
                     break;
-                case TargetRule.Target_Friend_All:
-                    results.AddRange(me.Field!);
-                    results.AddRange(me.MemberZone!);
+
+                case TargetRule.All_Enemies: // 기존 Target_Enemy_All 에서 All_Enemies 로 수정
+                    results.Add(opp.Leader);
+                    results.AddRange(opp.Field.Where(e => e != null)!);
+                    results.AddRange(opp.MemberZone.Where(e => e != null)!);
                     break;
+
+                case TargetRule.All_Friends: // 기존 Target_Friend_All 에서 All_Friends 로 수정
+                    results.Add(me.Leader);
+                    results.AddRange(me.Field.Where(e => e != null)!);
+                    results.AddRange(me.MemberZone.Where(e => e != null)!);
+                    break;
+
+                // ========================================================
+                // 4. 랜덤 효과 (기존 로직 유지)
+                // ========================================================
                 case TargetRule.Random:
                     List<GameEntity> enemies = new List<GameEntity>();
                     enemies.Add(opp.Leader);
                     enemies.AddRange(opp.Field.Where(e => e != null)!);
                     enemies.AddRange(opp.MemberZone.Where(e => e != null)!);
-                    enemies.AddRange(opp.MemberZone!);
-                    
                     // 살아있는 적만 타겟팅
                     enemies = enemies.Where(e => e.Health > 0).ToList();
 
