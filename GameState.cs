@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.Linq;
 using System.Text; // StringBuilder 사용 (문자열 조합)
 using System.Threading.Tasks; // 비동기 작업(Task) 사용
+using Google.Cloud.Firestore;
 using Newtonsoft.Json; // JSON 직렬화/역직렬화
 
 namespace GameServer
@@ -49,29 +50,16 @@ namespace GameServer
 
     public enum TargetRule
     {
-        None,
+        None = 0,               // 대상 없음 (자동/광역/랜덤 등)
 
-        // --- 단일 지정 (플레이어가 직접 클릭해야 함) ---
-        Target_All,                 // 모든 캐릭터 중 하나 지정 
-        Target_Minion,              // 모든 하수인 중 하나 지정
-        Target_Enemy_All,           // 적 캐릭터 중 하나 지정
-        Target_Enemy_Minion,        // 적 하수인 중 하나 지정
-        Target_Enemy_Leader,        // 적 영웅(명치) 지정 
-        Target_Friend_All,          // 아군 캐릭터 중 하나 지정
-        Target_Friend_Minion,       // 아군 하수인 중 하나 지정
-        Target_Friend_Leader,       // 아군 영웅 지정 
-
-        // --- 광역 / 자동 (클릭 불필요, 범위 지정) ---
-        All_Characters,             // 모든 캐릭터 
-        All_Minions,                // 모든 하수인
-        All_Enemies,                // 모든 적
-        All_Enemy_Minions,          // 모든 적 하수인
-        All_Friends,                // 모든 아군
-        All_Friendly_Minions,       // 모든 아군 하수인
-
-        Random,                     // 랜덤
-
-        Self                        // 자기 자신
+        // --- 단일 지정 (플레이어가 직접 선택) ---
+        Target_All = 1,                 // 모든 캐릭터(리더+멤버+하수인) 중 1개 선택
+        Target_Minion = 2,              // 모든 하수인 중 1개 선택
+        Target_Enemy_All = 3,           // 적 캐릭터(리더+멤버+하수인) 중 1개 선택
+        Target_Enemy_Minion = 4,        // 적 하수인 중 1개 선택
+        Target_Friend_All = 5,          // 아군 캐릭터(리더+멤버+하수인) 중 1개 선택
+        Target_Friend_Minion = 6,       // 아군 하수인 중 1개 선택
+        Target_Member = 7,              // 멤버중 하나
     }
 
     public enum CardRarity
@@ -88,21 +76,6 @@ namespace GameServer
         기본,
     }
 
-    public enum CardCondition
-    {
-        NONE,
-        TRIBE,
-        HAS_KEYWORD,
-        CARD_ID,
-        CARD_TYPE,
-        COST_LESS,
-        COST_MORE,
-        ATTACK_MORE,
-        ATTACK_LESS,
-        HEALTH_MORE,
-        HEALTH_LESS
-    }
-
     // ==================================================================
     // 1. 데이터 모델 (GameCard, GameEntity)
     // ==================================================================
@@ -116,6 +89,7 @@ namespace GameServer
     {
         public string CardId { get; private set; } // 원본 카드 ID (예: "Fireball")
         public string InstanceId { get; set; }     // 이 게임에서의 고유 ID (예: "Hand_PlayerA_1")
+        public string OwnerUid { get; set; } = ""; 
         public string CardName { get; private set; }
         
         // --- 원본 스탯 (절대 변하지 않는 기준값) ---
@@ -127,14 +101,45 @@ namespace GameServer
         public CardType? Type;
         public CardClass? Class { get; private set; }  // 직업
         public CardTribe? Tribe { get; private set; }  // 종족 (강도단 등)
-        public TargetRule TargetRule { get; private set; } // 타겟팅 규칙
-        public List<ServerEffectData> Effects { get; private set; } // 특수 효과 목록
+        public CardRarity? Rarity { get; private set; } 
+        public bool TargetRule { get; private set; } // 타겟팅 규칙
+
+        // 새로운 시스템용 효과 리스트와 Zone 상태
+        public GameServer.Effects.Zone CurrentZone { get; private set; } = GameServer.Effects.Zone.None;
+        public List<GameServer.Effects.CardEffect> NewEffects { get; set; } = new List<GameServer.Effects.CardEffect>();
+
+        // 카드의 위치가 바뀔 때 호출되는 핵심 메서드
+        public void UpdateZone(GameServer.Effects.Zone newZone, GameServer.Effects.EventSystem eventSystem)
+        {
+            if (CurrentZone == newZone) return; // 위치가 그대로면 무시
+
+            // 1. 기존 Zone에서 벗어났으므로, 기존 위치에서 발동하던 효과들을 구독 해지
+            foreach (var effect in NewEffects)
+            {
+                if (effect.ActiveZone == CurrentZone)
+                {
+                    eventSystem.Unsubscribe(effect);
+                }
+            }
+
+            CurrentZone = newZone;
+
+            // 2. 새로운 Zone에 진입했으므로, 새 위치에서 발동해야 할 효과들을 구독 등록
+            foreach (var effect in NewEffects)
+            {
+                if (effect.ActiveZone == CurrentZone)
+                {
+                    eventSystem.Subscribe(effect, this);
+                }
+            }
+        }
 
         // --- 현재 스탯 (게임 중 버프/너프에 의해 변하는 값) ---
         public int CurrentCost { get; set; }
         public int CurrentAttack { get; set; }
         public int CurrentHealth { get; set; }
         public List<CardKeywords> CurrentKeywords { get; set; }
+        public List<EnchantmentInfo> Enchantments { get; set; } = new List<EnchantmentInfo>();
 
         // [생성자 1] 일반 카드 생성 (DB에서 데이터 로드)
         public GameCard(string cardId, string instanceId)
@@ -157,8 +162,9 @@ namespace GameServer
                 Type = data.CardType ?? CardType.UNKNOWN;
                 Class = data.Class ?? CardClass.Gangzi;
                 Tribe = data.Tribe ?? CardTribe.강도단;
-                TargetRule = data.CardTargetRule ?? TargetRule.None;
-                Effects = data.GetParsedEffects();
+                Rarity = data.Rarity ?? CardRarity.common; 
+                TargetRule = data.Targeting ?? false;
+                NewEffects = data.GetNewParsedEffects(); 
             }
             else
             {
@@ -166,9 +172,9 @@ namespace GameServer
                 Console.WriteLine($"[GameCard] ⚠️ DB에서 카드 데이터를 찾을 수 없습니다: {cardId}");
                 CardName = "알 수 없는 카드";
                 OriginalCost = 1; OriginalAttack = 1; OriginalHealth = 1;
-                Type = CardType.하수인; Class = CardClass.Gangzi; Tribe = CardTribe.무소속; TargetRule = TargetRule.None;
+                Type = CardType.하수인; Class = CardClass.Gangzi; Tribe = CardTribe.무소속; TargetRule = false;
                 OriginalKeywords = new List<CardKeywords> { CardKeywords.Default };
-                Effects = new List<ServerEffectData>();
+                NewEffects = new List<GameServer.Effects.CardEffect>();
             }
 
             // 초기에는 현재 스탯 = 원본 스탯
@@ -193,8 +199,8 @@ namespace GameServer
             Type = CardType.READER;
             Class = playerClass;
             Tribe = tribe;
-            TargetRule = TargetRule.None;
-            Effects = new List<ServerEffectData>();
+            Rarity = CardRarity.legendary; 
+            TargetRule = false;
 
             CurrentCost = OriginalCost;
             CurrentAttack = OriginalAttack;
@@ -212,7 +218,8 @@ namespace GameServer
                 cardName = this.CardName,
                 currentCost = this.CurrentCost,
                 currentAttack = this.CurrentAttack,
-                currentHealth = this.CurrentHealth
+                currentHealth = this.CurrentHealth,
+                enchantments = new List<EnchantmentInfo>(this.Enchantments)
             };
         }
     }
@@ -236,9 +243,14 @@ namespace GameServer
         public bool HasAttacked { get; set; } // 이번 턴에 이미 공격했는가?
         public List<CardKeywords>? Keywords { get; set; }
         public CardTribe? Tribe { get; set; }
+        // 필드 개체의 버프 기록 (보통 SourceCard의 Enchantments와 동기화하거나 별도 관리)
+        public List<EnchantmentInfo> Enchantments { get; set; } = new List<EnchantmentInfo>();
         public int Position { get; set; }
         public bool IsMember { get; set; }
         public bool IsLeader { get; set; }
+
+         // 체력과 무관하게 강제 파괴(처치) 대상이 되었는지를 나타내는 플래그
+        public bool IsDestroyed { get; set; } = false; 
 
         public GameEntity(int entityId, GameCard sourceCard, string ownerUid)
         {
@@ -252,6 +264,7 @@ namespace GameServer
             MaxHealth = sourceCard.CurrentHealth;
             Keywords = new List<CardKeywords>(sourceCard.CurrentKeywords);
             Tribe = sourceCard.Tribe; 
+            
             
             // 속공(Rush)이나 돌진(Charge)이 있으면 바로 공격 가능
             bool hasCharge = Keywords.Contains(CardKeywords.Charge);
@@ -277,9 +290,10 @@ namespace GameServer
                 canAttack = this.CanAttack,
                 hasAttacked = this.HasAttacked,
                 keywords = this.Keywords,
+                enchantments = new List<EnchantmentInfo>(this.Enchantments),
                 position = this.Position, 
                 isMember = this.IsMember,
-                isLeader = this.IsLeader
+                isLeader = this.IsLeader,
             };
         }
     }
@@ -308,6 +322,7 @@ namespace GameServer
         
         public List<GameCard> Deck { get; private set; }    // 현재 덱에 남은 카드 목록
         public List<GameCard> Hand { get; private set; }    // 현재 손에 들고 있는 카드 목록
+        public List<GameCard> Graveyard { get; private set; } = new List<GameCard>();
 
         // 필드 슬롯: [0]~[4]까지 총 5칸의 하수인 배치 구역
         public GameEntity?[] Field { get; private set; } = new GameEntity?[5];
@@ -330,6 +345,7 @@ namespace GameServer
             Leader = leader;
             Deck = new List<GameCard>();
             Hand = new List<GameCard>();
+            Graveyard = new List<GameCard>();
 
             // 게임 시작 시 플레이어의 덱 데이터를 기반으로 GameCard 객체들을 생성하여 덱에 채움
             if (player.Deck != null && player.Deck.cardIds != null)
@@ -338,7 +354,7 @@ namespace GameServer
                 {
                     // 덱 내의 카드들도 구분을 위해 임시 인스턴스 ID 부여
                     string instanceId = $"DeckCard_{Uid}_{_nextInstanceId++}";
-                    Deck.Add(new GameCard(cardId, instanceId));
+                    Deck.Add(new GameCard(cardId, instanceId) { OwnerUid = Uid });
                 }
             }
         }
@@ -378,6 +394,7 @@ namespace GameServer
         }
         
     }
+    
 
 
     // ==================================================================
@@ -396,8 +413,7 @@ namespace GameServer
         // 필드 위의 모든 개체(영웅, 하수인, 멤버)를 ID로 빠르게 찾기 위한 저장소
         private readonly Dictionary<int, GameEntity> _allEntities = new Dictionary<int, GameEntity>();
         
-        // 카드 효과(데미지, 버프 등) 처리를 전담하는 프로세서
-        private readonly GameEffectProcessor _effectProcessor;
+        public Effects.EventSystem EventSystem { get; private set; }
 
         private string _currentTurnPlayerUid = "";           // 현재 턴을 진행 중인 플레이어 UID
         private string _firstPlayerUid = "";                // 이번 게임의 선공 플레이어 UID
@@ -431,6 +447,13 @@ namespace GameServer
         public string CurrentPhase => _currentPhase ?? ""; // 외부에서 읽기 위한 Getter
         private string _pendingChoiceType = ""; 
         private string _pendingChoiceData = ""; 
+        private int _pendingChoiceCount = 0;
+
+        // 하수인 소환시 타겟변수들
+        private string _pendingPlayHandInstanceId = ""; // 대기 중인 카드의 InstanceId
+        private int _pendingPlayPosition = -1;          // 대기 중인 소환 슬롯 인덱스
+        private string _pendingPlaySenderUid = "";      // 카드를 낸 유저의 UID
+        private List<int> _pendingPlayTargets = new List<int>(); // 수집된 타겟 EntityId 목록
 
         /// <summary>
         /// (신규) 이벤트를 로그에 기록합니다.
@@ -455,6 +478,12 @@ namespace GameServer
         public event Action<string, string>? OnCardPlayed;    // 누가, 무슨 카드를 냈는가?
         public event Action<string, string>? OnAttacked; // 누가, 누구를, 데미지 몇으로 공격하려 했는가?
         public event Action<string, string, int>? ApllyAttacked; // 누가, 누구를, 데미지 몇으로 공격했는가?
+        public event Action<string, string, int>? OnMinionSummoned; // 플레이어 UID, 하수인 이름, 배치 슬롯 위치
+        public event Action<string, string>? OnMinionDestroyed;     // 플레이어 UID, 하수인 이름
+        public event Action<string, int, int>? OnDamageApplied;     // 피해 대상 이름, 피해량, 원인 엔티티 ID
+        public event Action<string, int, int>? OnHealApplied;       // 회복 대상 이름, 회복량, 원인 엔티티 ID 
+        public event Action<string, string, string>? EffectLog;     // 대상, 시전자, 효과
+
         
 
         public GameState(GameRoom room, GamePlayer playerA, GamePlayer playerB)
@@ -469,8 +498,8 @@ namespace GameServer
                 classA = parsedClassA;
             }
             // (InstanceId, 직업 Enum, 종족 Enum, 체력) 순으로 전달
-            GameCard leaderCardA = new GameCard("Leader_A_Instance", classA, CardTribe.무소속, 30);
-            GameEntity leaderA = new GameEntity(1, leaderCardA, playerA.Uid);
+            GameCard leaderCardA = new GameCard("Leader_A_Instance", classA, CardTribe.무소속, 30) { OwnerUid = playerA.Uid };
+            GameEntity leaderA = new GameEntity(10000, leaderCardA, playerA.Uid);
             leaderA.IsLeader = true;
 
 
@@ -480,8 +509,8 @@ namespace GameServer
             {
                 classB = parsedClassB;
             }
-            GameCard leaderCardB = new GameCard("Leader_B_Instance", classB, CardTribe.무소속, 30);
-            GameEntity leaderB = new GameEntity(2, leaderCardB, playerB.Uid);
+            GameCard leaderCardB = new GameCard("Leader_B_Instance", classB, CardTribe.무소속, 30) { OwnerUid = playerB.Uid };
+            GameEntity leaderB = new GameEntity(20000, leaderCardB, playerB.Uid);
             leaderB.IsLeader = true;
 
             // 2. 전역 개체 목록에 등록 (ID 1, 2번은 영웅 고정)
@@ -496,7 +525,7 @@ namespace GameServer
             _mulliganDecisions[_playerA.Uid] = null;
             _mulliganDecisions[_playerB.Uid] = null;
             
-            _effectProcessor = new GameEffectProcessor(this);
+            EventSystem = new Effects.EventSystem(this);
 
             // Player A와 B가 "카드 뽑았다"고 소리치면, GameState가 그걸 듣고 AddLog를 실행함
             _playerA.OnCardDrawn += (playerName, id) => {
@@ -509,6 +538,25 @@ namespace GameServer
 
             // 게임이 생성될 때 로그 시스템을 이벤트에 연결(구독)시킵니다.
             InitializeLogger(); 
+
+            foreach (var card in _playerA.Deck) card.UpdateZone(GameServer.Effects.Zone.Deck, EventSystem);
+            foreach (var card in _playerB.Deck) card.UpdateZone(GameServer.Effects.Zone.Deck, EventSystem);
+        }
+
+
+        /// <summary>
+        /// 대시보드에 로그 남기기
+        /// </summary>
+        /// <param name="targetName"></param>
+        /// <param name="sourceName"></param>
+        /// <param name="effectName"></param>
+        public void RaiseEffectLog(string targetName, string? sourceName, string effectName)
+        {
+            // 시전자(sourceName)가 null일 경우를 대비해 기본값을 지정해 줍니다.
+            string caster = sourceName ?? "System";
+            
+            // 이벤트를 GameState 내부에서 안전하게 실행합니다.
+            EffectLog?.Invoke(targetName, caster, effectName);
         }
 
         private void InitializeLogger()
@@ -519,13 +567,51 @@ namespace GameServer
             };
 
             // 공격시도 했을때 알아서 로그 작성
+            /*
             this.OnAttacked += (attackerName, targetName) => {
                 AddLog(attackerName, "ATTACK", $"{attackerName}이(가) {targetName}에게 공격을 시도합니다!");
             };
+            */
 
             // 공격했을 때 알아서 로그 작성
             this.ApllyAttacked += (attackerName, targetName, damage) => {
                 AddLog(attackerName, "ATTACK", $"{attackerName}이(가) {targetName}에게 {damage}의 피해를 입혔습니다!");
+            };
+
+            // =================================================================
+            // 하수인이 필드에 소환되었을 때 로그 작성
+            // =================================================================
+            this.OnMinionSummoned += (playerName, minionName, position) => {
+                AddLog(playerName, "SUMMON", $"{playerName}의 필드 {position}번 슬롯에 [{minionName}] 하수인이 소환되었습니다.");
+            };
+
+            // =================================================================
+            // 하수인이 필드에서 파괴(사망)되었을 때 로그 작성
+            // =================================================================
+            this.OnMinionDestroyed += (playerName, minionName) => {
+                AddLog(playerName, "DEATH", $"{playerName}의 하수인 [{minionName}]이(가) 전장에서 파괴되었습니다.");
+            };
+
+            // =================================================================
+            // 하수인이나 영웅이 피해(데미지)를 입었을 때 로그 작성
+            // =================================================================
+            this.OnDamageApplied += (targetName, damage, sourceId) => {
+                AddLog("System", "DAMAGE", $"[{targetName}]이(가) {damage}의 피해를 입었습니다. (피해 원인 ID: {sourceId})");
+            };
+
+            // =================================================================
+            // 하수인이나 영웅이 회복(치유)되었을 때 로그 작성
+            // =================================================================
+            this.OnHealApplied += (targetName, healAmount, sourceId) => {
+                AddLog("System", "HEAL", $"[{targetName}]이(가) 체력을 {healAmount}만큼 회복했습니다. (치유 원인 ID: {sourceId})");
+            };
+
+            // =================================================================
+            // 카드 효과가 발동되었을 때 로그 작성
+            // =================================================================
+            this.EffectLog += (targetName, sourceId, effectname) =>
+            {
+                AddLog("System","EFFECT",  $"[{sourceId}]이(가) {targetName}에게 {effectname}을 사용했습니다.");
             };
         }
 
@@ -613,6 +699,13 @@ namespace GameServer
         /// </summary>
         private async Task DispatchActionAsync(string uid, GameActionType action, string json)
         {
+            // 🏳️ 항복은 본인 턴 여부나 현재 페이즈와 관계없이 언제든지 처리 가능
+            if (action == GameActionType.CONCEDE)
+            {
+                await ProcessConcedeAsync(uid);
+                return;
+            }
+
             // 턴 주인이 아닌데 멀리건 페이즈도 아니라면 무시
             if (_currentPhase != "Mulligan" && uid != _currentTurnPlayerUid)
             {
@@ -630,11 +723,23 @@ namespace GameServer
                     await ProcessEndTurnAsync(uid);
                     break;
                 case GameActionType.PLAY_CARD:        
-                    Console.WriteLine($"[DispatchActionAsync] 👉 클라이언트로부터 PLAY_CARD 액션을 전달받았습니다.");
                     var play = JsonConvert.DeserializeObject<C_PlayCard>(json);
                     if (play != null) await ProcessPlayCardAsync(uid, play);
                     else Console.WriteLine($"[DispatchActionAsync] ❌ 실패: C_PlayCard JSON 역직렬화에 실패했습니다.");
                     break;
+                case GameActionType.VALID_TARGETS_REQUEST:
+                    var target = JsonConvert.DeserializeObject<C_ValidTargetRequest>(json);
+                    if (target != null) await ProcessTargetChoiceAsync(uid, target);
+                    break;
+                case GameActionType.SELECT_TARGET_FOR_PLAY:
+                var selectTarget = JsonConvert.DeserializeObject<C_SelectTargetForPlay>(json);
+                if (selectTarget != null) await ProcessSelectTargetForPlayAsync(uid, selectTarget);
+                else Console.WriteLine($"[DispatchActionAsync] ❌ 실패: C_SelectTargetForPlay JSON 역직렬화에 실패했습니다.");
+                break;
+                case GameActionType.VALID_ATTACK_TARGETS_REQUEST:
+                var atkTargetReq = JsonConvert.DeserializeObject<C_ValidAttackTargetsRequest>(json);
+                if (atkTargetReq != null) await ProcessValidAttackTargetsRequestAsync(uid, atkTargetReq);
+                break;
                 case GameActionType.MAKE_CHOICE:
                     if (_currentPhase == "AWAITING_CHOICE")
                     {
@@ -647,6 +752,19 @@ namespace GameServer
                     if (atk != null) await ProcessAttackAsync(uid, atk);
                     break;
             }
+        }
+
+        /// <summary>
+        /// 플레이어가 항복(CONCEDE)했을 때 처리합니다.
+        /// </summary>
+        private async Task ProcessConcedeAsync(string concedingUid)
+        {
+            Console.WriteLine($"[GameState] 🏳️ 플레이어 항복 수신: {concedingUid}");
+            if (_isGameOver) return;
+
+            // 항복한 플레이어의 상대방을 승자로 결정
+            string winnerUid = (concedingUid == _playerA.Uid) ? _playerB.Uid : _playerA.Uid;
+            await EndGameAsync(winnerUid, "항복");
         }
 
         /// <summary>
@@ -663,6 +781,7 @@ namespace GameServer
             // 1. 상태 기억
             _pendingChoiceType = choiceType;
             _pendingChoiceData = choiceData;
+            _pendingChoiceCount = count;
 
             // 2. 화면 최신화
             await FlushUpdatesAsync();
@@ -756,7 +875,15 @@ namespace GameServer
         }
 
         private List<CardInfo> DrawInitialHand(PlayerState p) {
-            for (int i = 0; i < 5; i++) p.DrawCard();
+            for (int i = 0; i < 5; i++)
+            {
+                GameCard? drawnCard = p.DrawCard();
+                if (drawnCard != null)
+                {
+                    // 덱에서 패로 들어왔으므로 Zone.Hand로 업데이트! (손패 버프 효과가 여기서부터 켜짐)
+                    drawnCard.UpdateZone(GameServer.Effects.Zone.Hand, this.EventSystem);
+                }
+            }
             return p.Hand.Select(c => c.ToCardInfo()).ToList();
         }
         
@@ -795,10 +922,26 @@ namespace GameServer
             }
 
             // 2. 제거한 수만큼 새로운 카드를 덱에서 뽑음
-            for (int i = 0; i < cardsToReturn.Count; i++) player.DrawCard();
+            for (int i = 0; i < cardsToReturn.Count; i++) 
+            {
+                  GameCard? drawnCard = player.DrawCard();
+                if (drawnCard != null)
+                {
+                    // 덱에서 패로 들어왔으므로 Zone.Hand로 업데이트! (손패 버프 효과가 여기서부터 켜짐)
+                    drawnCard.UpdateZone(GameServer.Effects.Zone.Hand, this.EventSystem);
+                }
+            }
             
             // 3. 뺐던 카드를 다시 덱에 넣고 섞음
-            if (cardsToReturn.Count > 0) { player.Deck.AddRange(cardsToReturn); player.ShuffleDeck(Rng); }
+            if (cardsToReturn.Count > 0) { 
+                foreach (var card in cardsToReturn)
+                {
+                    // 손패(Hand)에서 다시 덱(Deck)으로 돌아가므로 Zone 업데이트!
+                    card.UpdateZone(GameServer.Effects.Zone.Deck, this.EventSystem);
+                }
+                player.Deck.AddRange(cardsToReturn); 
+                player.ShuffleDeck(Rng); 
+            }
 
             // 4. 상대방에게 나의 멀리건 완료 상태(몇 장 바꿨는지)를 알림
             var statusMsg = new S_OpponentMulliganStatus
@@ -875,14 +1018,16 @@ namespace GameServer
             PlayerState p = GetPlayerState(uid);
             PlayerState op = GetPlayerState(uid, true);
 
+            Console.WriteLine($"[GameState] 📢 {(p.PlayerRef.IsBot ? "🤖 봇" : "🧑 플레이어")} ({p.Uid})의 턴 시작");
+
             // 1. Standby 페이즈 알림
             _currentPhase = "Standby";
             var phaseMsg = JsonConvert.SerializeObject(new S_PhaseStart { action=GameActionType.PHASE_START, phase = GamePhase.STANDBY, TurnPlayerUid=_currentTurnPlayerUid });
             await _room.SendMessageToPlayerAsync(p.PlayerRef, phaseMsg);
             await _room.SendMessageToPlayerAsync(op.PlayerRef, phaseMsg);
 
-            // 턴 시작(ON_TURN_START) 시점에 발동할 효과가 있는지 전체 필드 검사
-            await ProcessPhaseEffectsAsync(EffectTriggerType.ON_TURN_START);
+            var startContext = new GameServer.Effects.EffectContext(_currentTurnPlayerUid, null, EffectTriggerType.ON_TURN_START);
+            await EventSystem.PublishAsync(EffectTriggerType.ON_TURN_START, startContext);
 
             // 2. 마나 충전 (최대 10까지 1씩 증가)
             p.MaxMana = Math.Min(p.MaxMana + 1, 10);
@@ -894,6 +1039,11 @@ namespace GameServer
             // 3. Draw 페이즈 (카드 한 장 뽑기)
             _currentPhase = "Draw";
             GameCard? drawnCard = p.DrawCard();
+            if (drawnCard != null)
+            {
+                // 덱에서 패로 들어왔으므로 Zone.Hand로 업데이트! (손패 버프 효과가 여기서부터 켜짐)
+                drawnCard.UpdateZone(GameServer.Effects.Zone.Hand, this.EventSystem);
+            }
             // 드로우 카드 전송
             await _room.SendMessageToPlayerAsync(p.PlayerRef, JsonConvert.SerializeObject(new S_PhaseStart {TurnPlayerUid = _currentTurnPlayerUid, action=GameActionType.PHASE_START, phase=GamePhase.DRAW, drawnCard=drawnCard?.ToCardInfo() }));
             await _room.SendMessageToPlayerAsync(op.PlayerRef, JsonConvert.SerializeObject(new S_PhaseStart {TurnPlayerUid = _currentTurnPlayerUid, action=GameActionType.PHASE_START, phase=GamePhase.DRAW, drawnCard=null }));
@@ -925,57 +1075,41 @@ namespace GameServer
             }
         }
 
-        /// <summary>
-        /// 특정 타이밍(턴 시작, 턴 종료 등)의 효과를 정해진 규칙(순서)에 따라 발동시킵니다.
-        /// 발동 순서: 턴 주인 영웅 -> 턴 주인 필드(좌->우) -> 턴 주인 멤버 -> 상대 영웅 -> 상대 필드(좌->우) -> 상대 멤버
-        /// </summary>
-        private async Task ProcessPhaseEffectsAsync(EffectTriggerType phaseTriggerType)
+        public async Task<GameCard?> DrawCardWithSyncAsync(string playerUid)
         {
-            bool effectTriggered = false;
+            PlayerState p = GetPlayerState(playerUid);
+            PlayerState op = GetPlayerState(playerUid, true);
 
-            // 1. 현재 턴 플레이어와 상대방 플레이어 상태 가져오기
-            PlayerState me = GetPlayerState(_currentTurnPlayerUid);
-            PlayerState opp = GetPlayerState(_currentTurnPlayerUid, true);
-
-            // 2. [핵심] 정해진 순서대로 효과를 발동할 스냅샷 리스트 만들기
-            List<GameEntity> orderedEntities = new List<GameEntity>();
-
-            // --- (1) 턴 주인의 개체들 ---
-            orderedEntities.Add(me.Leader); // 턴 주인 리더
-            if (me.MemberZone[0] != null) orderedEntities.Add(me.MemberZone[0]!); // 턴 주인 멤버
-            for (int i = 0; i < me.Field.Length; i++)
+            GameCard? drawnCard = p.DrawCard();
+            if (drawnCard != null)
             {
-                if (me.Field[i] != null) orderedEntities.Add(me.Field[i]!); // 턴 주인 하수인 (왼쪽부터 오른쪽)
-            }
+                // 1. 카드의 현재 구역을 손패(Zone.Hand)로 업데이트
+                drawnCard.UpdateZone(GameServer.Effects.Zone.Hand, this.EventSystem);
 
-            // --- (2) 상대방의 개체들 ---
-            orderedEntities.Add(opp.Leader); // 상대방 리더
-            if (opp.MemberZone[0] != null) orderedEntities.Add(opp.MemberZone[0]!); // 상대방 멤버
-            for (int i = 0; i < opp.Field.Length; i++)
-            {
-                if (opp.Field[i] != null) orderedEntities.Add(opp.Field[i]!); // 상대방 하수인 (왼쪽부터 오른쪽)
-            }
+                // 2. 서버 이벤트 로그 기록
+                LogEvent(GameEventType.DRAW, 0, 0, 1, drawnCard.CardId);
 
-            // 3. 만들어진 순서대로 효과 검사 및 발동
-            foreach (var entity in orderedEntities)
-            {
-                // 자신의 차례가 왔을 때 이미 죽었다면 효과 발동 스킵
-                if (entity.Health <= 0) continue; 
-
-                if (entity.SourceCard.Effects != null && 
-                    entity.SourceCard.Effects.Any(e => e.Trigger == phaseTriggerType))
+                // 3. 전용 드로우 패킷(S_DrawCard)을 만들어서 양측에 전송
+                // 나에게는 카드 앞면 정보를 전송하고, 상대방에게는 null을 보내 카드 장수 늘어나는 연출만 유도합니다.
+                var msgToSelf = new S_DrawCard
                 {
-                    LogEvent(GameEventType.EFFECT_TRIGGER, entity.EntityId, 0, 0, null, phaseTriggerType);
-                    await _effectProcessor.ExecuteEffectsAsync(entity.SourceCard, entity, null, phaseTriggerType, entity.OwnerUid);
-                    effectTriggered = true;
-                }
+                    action = GameActionType.DRAW_CARD, // 혹은 Enum이 없다면 문자열/매핑 규격에 맞게 설정
+                    playerUid = playerUid,
+                    drawnCard = drawnCard.ToCardInfo()
+                };
+
+                var msgToOpponent = new S_DrawCard
+                {
+                    action = GameActionType.DRAW_CARD,
+                    playerUid = playerUid,
+                    drawnCard = null
+                };
+
+                await _room.SendMessageToPlayerAsync(p.PlayerRef, JsonConvert.SerializeObject(msgToSelf));
+                await _room.SendMessageToPlayerAsync(op.PlayerRef, JsonConvert.SerializeObject(msgToOpponent));
             }
 
-            if (effectTriggered)
-            {
-                await BroadcastUpdatesAsync(_currentTurnPlayerUid); 
-                await ProcessDeathsAsync();
-            }
+            return drawnCard;
         }
 
         /// <summary>
@@ -1001,8 +1135,8 @@ namespace GameServer
             await _room.SendMessageToPlayerAsync(_playerA.PlayerRef, msg);
             await _room.SendMessageToPlayerAsync(_playerB.PlayerRef, msg);
 
-            // 턴 종료(ON_TURN_END) 시점에 발동할 효과가 있는지 전체 필드 검사
-            await ProcessPhaseEffectsAsync(EffectTriggerType.ON_TURN_END);
+            var endContext = new GameServer.Effects.EffectContext(_currentTurnPlayerUid, null, EffectTriggerType.ON_TURN_END);
+            await EventSystem.PublishAsync(EffectTriggerType.ON_TURN_END, endContext);
             
             await Task.Delay(500);
             
@@ -1035,26 +1169,7 @@ namespace GameServer
                 player.Deck.Remove(targetCard);
                 player.Deck.Add(targetCard);
 
-                // 4. 플레이어의 드로우 로직을 실행합니다 (내부적으로 맨 끝 카드를 손패로 가져갑니다) [1].
-                GameCard? drawnCard = player.DrawCard();
-
-                if (drawnCard != null)
-                {
-                    Console.WriteLine($"[GameState - Cheat] {playerUid}가 덱에서 '{targetCardId}'를 강제 드로우했습니다.");
-
-                    // 5. (중요) 턴 중간에 강제로 카드를 뽑은 경우, 클라이언트(유니티) 화면에도 카드가 
-                    // 보이도록 패킷을 전송해 주어야 합니다. 
-                    // (기존 Draw Phase에서 사용하는 메시지 구조를 활용) [3]
-                    var drawMsg = new S_PhaseStart 
-                    { 
-                        TurnPlayerUid = playerUid, 
-                        action = GameActionType.PHASE_START, 
-                        phase = GamePhase.DRAW, 
-                        drawnCard = drawnCard.ToCardInfo() 
-                    };
-                    
-                    await _room.SendMessageToPlayerAsync(player.PlayerRef, JsonConvert.SerializeObject(drawMsg));
-                }
+                await DrawCardWithSyncAsync(playerUid);
             }
             else
             {
@@ -1064,103 +1179,386 @@ namespace GameServer
 
 
         /// <summary>
-        /// 손에 있는 카드를 필드에 내거나 사용하는 로직입니다.
+        /// [1단계] 플레이어가 손에서 카드를 내려고 시도할 때 검증하고, 타겟팅 필요 시 대기 상태로 전환합니다.
         /// </summary>
         public async Task ProcessPlayCardAsync(string senderUid, C_PlayCard action)
         {
-            Console.WriteLine($"[ProcessPlayCardAsync] 🔍 카드 사용 로직 진입! (클라이언트가 요청한 카드 ID: {action.handCardInstanceId}, 위치: {action.position})");
-
             PlayerState p = GetPlayerState(senderUid);
             PlayerState op = GetPlayerState(senderUid, true);
             _eventBuffer.Clear();
             _pendingUpdates.Clear();
 
-            // 1. 카드 존재 및 마나 자원 확인
+            // 1. 카드 존재 및 마나 자원 확인 [5, 6]
             GameCard? card = p.Hand.FirstOrDefault(c => c.InstanceId == action.handCardInstanceId);
             if (card == null)
             {
-                Console.WriteLine($"[ProcessPlayCardAsync] ❌ 실패: 서버 손패에서 해당 카드를 찾을 수 없습니다!");
-                Console.WriteLine($" 👉 서버에 등록된 현재 손패: {string.Join(", ", p.Hand.Select(c => c.InstanceId))}");
+                Console.WriteLine($"[ProcessPlayCardAsync] ❌ 실패: 서버 손패에서 카드를 찾을 수 없습니다!");
+                await _room.SendMessageToPlayerAsync(p.PlayerRef, JsonConvert.SerializeObject(new S_PlayCardFail {
+                            action = GameActionType.PLAY_CARD_FAIL,
+                            failedCardInstanceId = card.InstanceId,
+                            reason = "서버 손패에서 카드를 찾을 수 없습니다!"
+                        }));
                 return;
             }
 
             if (p.CurrentMana < card.CurrentCost)
             {
                 Console.WriteLine($"[ProcessPlayCardAsync] ❌ 실패: 마나가 부족합니다. (현재 마나: {p.CurrentMana}, 필요 마나: {card.CurrentCost})");
+                await _room.SendMessageToPlayerAsync(p.PlayerRef, JsonConvert.SerializeObject(new S_PlayCardFail {
+                            action = GameActionType.PLAY_CARD_FAIL,
+                            failedCardInstanceId = card.InstanceId,
+                            reason = "마나가 부족합니다. (현재 마나: {p.CurrentMana}, 필요 마나: {card.CurrentCost})"
+                        }));
                 return;
             }
 
-            // 2. 하수인 또는 멤버인지 확인
+            // 2. 하수인 또는 멤버 소환인 경우 미리 위치 유효성 검사 [6]
             bool isUnit = card.Type == CardType.하수인 || card.Type == CardType.멤버;
             bool isMember = card.Type == CardType.멤버;
             GameEntity?[] targetZone = isMember ? p.MemberZone : p.Field;
 
             if (isUnit)
             {
-                // 3. 소환 위치(슬롯) 유효성 및 빈 자리인지 확인
                 if (action.position < 0 || action.position >= targetZone.Length)
                 {
                     Console.WriteLine($"[ProcessPlayCardAsync] ❌ 실패: 잘못된 소환 위치입니다. (요청한 Position: {action.position})");
+                    await _room.SendMessageToPlayerAsync(p.PlayerRef, JsonConvert.SerializeObject(new S_PlayCardFail {
+                            action = GameActionType.PLAY_CARD_FAIL,
+                            failedCardInstanceId = card.InstanceId,
+                            reason = "잘못된 소환 위치입니다. (요청한 Position: {action.position})"
+                        }));
                     return;
                 }
                 if (targetZone[action.position] != null)
                 {
                     Console.WriteLine($"[ProcessPlayCardAsync] ❌ 실패: {action.position}번 위치에 이미 다른 개체가 존재합니다.");
+                    await _room.SendMessageToPlayerAsync(p.PlayerRef, JsonConvert.SerializeObject(new S_PlayCardFail {
+                            action = GameActionType.PLAY_CARD_FAIL,
+                            failedCardInstanceId = card.InstanceId,
+                            reason = "{action.position}번 위치에 이미 다른 개체가 존재합니다."
+                        }));
+                    return;
+                }
+            }
+
+            // 3. 타겟팅 필요 여부 분기 처리 (TargetRule 검증) [7]
+            if (card.TargetRule == true)
+            {
+                // 🤖 [디버그 봇 전용 예외 방어]: 봇은 항상 원테이크로 처리 [7]
+                if (p.PlayerRef.IsBot)
+                {
+                    var botValidIds = TargetValidator.GetValidTargetIds(this, card, senderUid);
+                    int chosenBotTarget = 0;
+                    if (botValidIds != null && botValidIds.Count > 0)
+                    {
+                        chosenBotTarget = botValidIds[Rng.Next(botValidIds.Count)];
+                    }
+                    await ExecuteCardPlayWithTargetAsync(senderUid, card, action.position, chosenBotTarget);
                     return;
                 }
 
-                Console.WriteLine($"[ProcessPlayCardAsync] ✅ 모든 검증 통과! 소환 및 큐 등록을 시작합니다.");
-
-                // 4. 자원 소모 및 손패 제거
-                p.CurrentMana -= card.CurrentCost;
-                p.Hand.Remove(card);
-
-                // 5. 실제 개체(Entity) 생성 및 필드 배치
-                int eid = _nextGlobalEntityId++;
-                GameEntity sourceEntity = new GameEntity(eid, card, senderUid);
-                sourceEntity.Position = action.position;
-                sourceEntity.IsMember = isMember;
-
-                LogEvent(GameEventType.SUMMON, sourceEntity.EntityId, 0, action.position, card.CardId, EffectTriggerType.ON_PLAY, sourceEntity.ToEntityData());
-                _allEntities.Add(eid, sourceEntity);
-                targetZone[action.position] = sourceEntity;
-                AddPendingUpdate(sourceEntity); // 클라이언트에게 알리기 위해 추가
-
-                // 6. '전투의 함성(ON_PLAY)' 타겟 확인
-                GameEntity? battlecryTarget = null;
-                if(action.targetEntityId > 0)
+                // =================================================================
+                // 🪄 [유저의 주문 카드 핵심 최적화]: 사용자님 말씀대로 2단계 대기 없이 즉시 시전!
+                // =================================================================
+                if (card.Type == CardType.주문)
                 {
-                    _allEntities.TryGetValue(action.targetEntityId, out battlecryTarget);
+                    // 클라이언트가 처음부터 보내준 targetEntityId가 진짜 유효한 대상인지 룰 검사 수행 [8]
+                    var validIds = TargetValidator.GetValidTargetIds(this, card, senderUid);
+                    
+                    if (validIds != null && validIds.Contains(action.targetEntityId))
+                    {
+                        // 타겟이 유효하므로 즉시 1단계만에 마나를 소모하고 주문 효과를 실행합니다! [9]
+                        Console.WriteLine($"[ProcessPlayCardAsync] 🪄 주문 카드 '{card.CardId}' 즉시 발동 성공! (지정 타겟: {action.targetEntityId})");
+                        await ExecuteCardPlayWithTargetAsync(senderUid, card, action.position, action.targetEntityId);
+                    }
+                    else
+                    {
+                        // 잘못된 대상을 찍었거나 대상을 누락한 경우 사용 실패 패킷 전송 [10]
+                        Console.WriteLine($"[ProcessPlayCardAsync] ❌ 실패: 주문 카드의 대상(ID: {action.targetEntityId})이 유효하지 않습니다.");
+                        await _room.SendMessageToPlayerAsync(p.PlayerRef, JsonConvert.SerializeObject(new S_PlayCardFail {
+                            action = GameActionType.PLAY_CARD_FAIL,
+                            failedCardInstanceId = card.InstanceId,
+                            reason = "지정한 대상이 유효하지 않은 대상입니다."
+                        }));
+                    }
+                    return;
                 }
 
-                // 7. 카드 플레이 자체의 성공 통보 및 이벤트 연출은 '즉시' 전송
-                await _room.SendMessageToPlayerAsync(p.PlayerRef, JsonConvert.SerializeObject(new S_PlayCardSuccess { action = GameActionType.PLAY_CARD_SUCCESS, serverInstanceId = card.InstanceId }));
-                await _room.SendMessageToPlayerAsync(op.PlayerRef, JsonConvert.SerializeObject(new S_OpponentPlayCard { action = GameActionType.OPPONENT_PLAY_CARD, cardPlayed = card.ToCardInfo(), targetEntityId = action.targetEntityId }));
-                OnCardPlayed!.Invoke(p.Uid, card.CardId);
+                // =================================================================
+                // 🃏 [유저의 하수인 카드]: 필드 슬롯 배치 후 2차 타겟을 수집하는 기존 2단계 적용
+                // =================================================================
+                var validIdsForMinion = TargetValidator.GetValidTargetIds(this, card, senderUid);
 
-                // ==========================================
-                // 8. 대기열(Action Queue) 예약
-                // ==========================================
-                _actionQueue.Enqueue(async () =>
+                if (validIdsForMinion != null && validIdsForMinion.Count > 0)
                 {
-                    LogEvent(GameEventType.EFFECT_TRIGGER, sourceEntity.EntityId, action.targetEntityId, 0, null, EffectTriggerType.ON_PLAY);
-                    await _effectProcessor.ExecuteEffectsAsync(card, sourceEntity, battlecryTarget, EffectTriggerType.ON_PLAY, senderUid);
-                });
+                    _pendingPlayHandInstanceId = card.InstanceId;
+                    _pendingPlayPosition = action.position;
+                    _pendingPlaySenderUid = senderUid;
+                    _pendingPlayTargets.Clear();
 
-                _actionQueue.Enqueue(async () =>
+                    _currentPhase = "AWAITING_TARGET_FOR_PLAY"; // 대기 상태 돌입 [2]
+
+                    var reqMsg = new S_RequestTargetForPlay
+                    {
+                        action = GameActionType.REQUEST_TARGET_FOR_PLAY,
+                        CardEntityId = card.InstanceId,
+                        position = action.position,
+                        targetIndex = 0,
+                        ValidTargetIds = validIdsForMinion
+                    };
+                    await _room.SendMessageToPlayerAsync(p.PlayerRef, JsonConvert.SerializeObject(reqMsg));
+                    Console.WriteLine($"[ProcessPlayCardAsync] 🎯 하수인 '{card.CardId}' 타겟 대기 페이즈 진입. 클라이언트에 2차 타겟팅을 요청했습니다.");
+                    return;
+                }
+                else
                 {
-                    await ProcessDeathsAsync();
-                    await BroadcastUpdatesAsync(senderUid); // 큐가 다 돌고 나서 최종 전송!
-                });
-
-                // 9. 대기열(큐) 실행 시작!
-                await ProcessActionQueueAsync();
+                    // 하수인의 전투의 함성은 타겟 대상이 없어도 필드 소환은 가능합니다 [11]
+                    Console.WriteLine($"[ProcessPlayCardAsync] ⚠️ '{card.CardId}' 대상이 없으므로 타겟팅 효과 없이 소환을 진행합니다.");
+                    await ExecuteCardPlayWithTargetAsync(senderUid, card, action.position, 0);
+                }
             }
             else
             {
-                // 마법(주문) 카드로 인식된 경우
-                Console.WriteLine($"[ProcessPlayCardAsync] ❌ 실패: 카드의 Type이 하수인이나 멤버가 아닙니다. (현재 Type: {card.Type})");
+                // 타겟팅이 아예 필요 없는 일반 카드(바닐라 하수인, 광역 주문 등)는 즉시 처리 [11]
+                await ExecuteCardPlayWithTargetAsync(senderUid, card, action.position, 0);
+            }
+        }
+
+        /// <summary>
+        /// [도우미] 타겟팅 검증을 모두 마쳤거나 필요 없는 카드를 실제로 실행하고 마나를 차감합니다. (하수인/주문 공용)
+        /// </summary>
+        private async Task ExecuteCardPlayWithTargetAsync(string senderUid, GameCard card, int position, int targetEntityId)
+        {
+            PlayerState p = GetPlayerState(senderUid);
+            PlayerState op = GetPlayerState(senderUid, true);
+
+            bool isUnit = card.Type == CardType.하수인 || card.Type == CardType.멤버;
+            bool isMember = card.Type == CardType.멤버;
+            GameEntity?[] targetZone = isMember ? p.MemberZone : p.Field;
+
+            // 1. 실제 마나 자원 소모 및 손패에서 제거 확정 [9]
+            p.CurrentMana -= card.CurrentCost;
+            p.Hand.Remove(card);
+
+            // 2. [분기 A] 하수인 및 멤버(유닛) 소환 로직 확정 [9]
+            if (isUnit)
+            {
+                card.UpdateZone(GameServer.Effects.Zone.Field, this.EventSystem);
+
+                int eid = _nextGlobalEntityId++;
+                GameEntity sourceEntity = new GameEntity(eid, card, senderUid);
+                sourceEntity.Position = position;
+                sourceEntity.IsMember = isMember;
+
+                LogEvent(GameEventType.SUMMON, sourceEntity.EntityId, 0, position, card.CardId, EffectTriggerType.ON_PLAY, sourceEntity.ToEntityData());
+                _allEntities.Add(eid, sourceEntity);
+                targetZone[position] = sourceEntity;
+                AddPendingUpdate(sourceEntity);
+
+                GameEntity? battlecryTarget = null;
+                if (targetEntityId > 0)
+                {
+                    _allEntities.TryGetValue(targetEntityId, out battlecryTarget);
+                }
+
+                // 성공 브로드캐스팅 전송 [14]
+                await _room.SendMessageToPlayerAsync(p.PlayerRef, JsonConvert.SerializeObject(new S_PlayCardSuccess { action = GameActionType.PLAY_CARD_SUCCESS, serverInstanceId = card.InstanceId }));
+                await _room.SendMessageToPlayerAsync(op.PlayerRef, JsonConvert.SerializeObject(new S_OpponentPlayCard { 
+                    action = GameActionType.OPPONENT_PLAY_CARD, 
+                    cardPlayed = card.ToCardInfo(), 
+                    targetEntityId = targetEntityId,
+                    position = position, // [추가 대입]
+                    entityId = eid       // [추가 대입]
+                }));
+                OnCardPlayed!.Invoke(p.Uid, card.CardId);
+
+                // 액션 대기열 대기 [8]
+                _actionQueue.Enqueue(async () =>
+                {
+                    Console.WriteLine($"[ProcessPlayCardAsync] 🃏 하수인 '{card.CardId}' (ID:{eid}) 소환완료 및 전투의 함성 실행.");
+                    LogEvent(GameEventType.EFFECT_TRIGGER, sourceEntity.EntityId, targetEntityId, 0, null, EffectTriggerType.ON_PLAY);
+
+                    var context = new GameServer.Effects.EffectContext(senderUid, card, EffectTriggerType.ON_PLAY)
+                    {
+                        SourceEntity = sourceEntity,
+                        TargetEntity = battlecryTarget
+                    };
+                    await EventSystem.PublishAsync(EffectTriggerType.ON_PLAY, context);
+                });
+
+                OnMinionSummoned?.Invoke(p.Uid, card.CardId, position);
+            }
+            // 3. [분기 B] 주문(Spell) 카드 발동 로직 확정
+            else if (card.Type == CardType.주문)
+            {
+                GameEntity? spellTarget = null;
+                if (targetEntityId > 0)
+                {
+                    _allEntities.TryGetValue(targetEntityId, out spellTarget);
+                }
+
+                await _room.SendMessageToPlayerAsync(p.PlayerRef, JsonConvert.SerializeObject(new S_PlayCardSuccess { action = GameActionType.PLAY_CARD_SUCCESS, serverInstanceId = card.InstanceId }));
+                await _room.SendMessageToPlayerAsync(op.PlayerRef, JsonConvert.SerializeObject(new S_OpponentPlayCard { 
+                    action = GameActionType.OPPONENT_PLAY_CARD, 
+                    cardPlayed = card.ToCardInfo(), 
+                    targetEntityId = targetEntityId,
+                }));
+                OnCardPlayed!.Invoke(p.Uid, card.CardId);
+
+                _actionQueue.Enqueue(async () =>
+                {
+                    Console.WriteLine($"[ProcessPlayCardAsync] 🪄 주문 카드 '{card.CardId}' 발동 시작.");
+                    LogEvent(GameEventType.EFFECT_TRIGGER, 0, targetEntityId, 0, null, EffectTriggerType.ON_PLAY);
+
+                    var context = new GameServer.Effects.EffectContext(senderUid, card, EffectTriggerType.ON_PLAY)
+                    {
+                        TargetEntity = spellTarget
+                    };
+                    await EventSystem.PublishAsync(EffectTriggerType.ON_PLAY, context);
+
+                    // 주문 완료 후 묘지 소모 처리
+                    card.UpdateZone(GameServer.Effects.Zone.Graveyard, this.EventSystem);
+                    p.Graveyard.Add(card);
+                });
+            }
+
+            // 공통 사후 처리 등록
+            _actionQueue.Enqueue(async () =>
+            {
+                await ProcessDeathsAsync();
+                await BroadcastUpdatesAsync(senderUid);
+            });
+
+            await ProcessActionQueueAsync();
+        }
+
+        /// <summary>
+        /// 대기 상태의 타겟 데이터를 초기화합니다.
+        /// </summary>
+        private void ClearPendingPlayState()
+        {
+            _pendingPlayHandInstanceId = "";
+            _pendingPlayPosition = -1;
+            _pendingPlayTargets.Clear();
+            _pendingPlaySenderUid = "";
+        }
+
+        /// <summary>
+        /// [2단계] 클라이언트가 지정한 최종 타겟 패킷을 받아 검증하고 최종 사용 처리를 명령합니다.
+        /// </summary>
+        public async Task ProcessSelectTargetForPlayAsync(string senderUid, C_SelectTargetForPlay action)
+        {
+            if (_currentPhase != "AWAITING_TARGET_FOR_PLAY" || senderUid != _pendingPlaySenderUid)
+            {
+                Console.WriteLine($"[ProcessSelectTargetForPlayAsync] ❌ 실패: 잘못된 타겟 응답입니다.");
                 return;
+            }
+
+            PlayerState p = GetPlayerState(senderUid);
+
+            // Case 1: 유저가 마우스 우클릭 등으로 "카드 사용을 취소"하여 -1이나 0을 보낸 경우
+            if (action.selectedEntityId <= 0)
+            {
+                Console.WriteLine($"[ProcessSelectTargetForPlayAsync] 🛑 유저가 카드 사용을 취소했습니다: {action.CardEntityId}");
+                
+                // 유니티 클라이언트가 들어 올렸던 카드를 손패로 고스란히 복구시키도록 실패 패킷 전송 [15]
+                await _room.SendMessageToPlayerAsync(p.PlayerRef, JsonConvert.SerializeObject(new S_PlayCardFail
+                {
+                    action = GameActionType.PLAY_CARD_FAIL,
+                    failedCardInstanceId = _pendingPlayHandInstanceId,
+                    reason = "카드 사용을 취소하셨습니다."
+                }));
+
+                ClearPendingPlayState();
+                _currentPhase = "Main"; // 메인 페이즈로 다시 돌려줌
+                return;
+            }
+
+            // 원본 카드 수색
+            GameCard? card = p.Hand.FirstOrDefault(c => c.InstanceId == _pendingPlayHandInstanceId);
+            if (card == null)
+            {
+                Console.WriteLine($"[ProcessSelectTargetForPlayAsync] ❌ 실패: 사용 대기 중인 카드가 더이상 손패에 존재하지 않습니다.");
+                ClearPendingPlayState();
+                _currentPhase = "Main";
+                return;
+            }
+
+            // TargetValidator로 대상 유효성 2차 철통 검사 [5]
+            var validIds = TargetValidator.GetValidTargetIds(this, card, senderUid);
+            if (validIds == null || !validIds.Contains(action.selectedEntityId))
+            {
+                Console.WriteLine($"[ProcessSelectTargetForPlayAsync] ❌ 실패: 규칙에 위반되는 타겟 ID({action.selectedEntityId})입니다.");
+                
+                await _room.SendMessageToPlayerAsync(p.PlayerRef, JsonConvert.SerializeObject(new S_PlayCardFail
+                {
+                    action = GameActionType.PLAY_CARD_FAIL,
+                    failedCardInstanceId = _pendingPlayHandInstanceId,
+                    reason = "타겟팅 대상이 규칙에 맞지 않습니다."
+                }));
+
+                ClearPendingPlayState();
+                _currentPhase = "Main";
+                return;
+            }
+
+            // =================================================================
+            // [다중 타겟 응용 설계 가이드]
+            // 만약 미래에 타겟을 2번 찍어야 하는 특수 하수인이 추가된다면 다음과 같이 유연하게 확장됩니다.
+            // 
+            // int requiredTargetCount = 1; // 기본값 1개
+            // if (card.CardId == "cards-epic-multiTarget") requiredTargetCount = 2;
+            //
+            // _pendingPlayTargets.Add(action.selectedEntityId);
+            //
+            // if (_pendingPlayTargets.Count < requiredTargetCount)
+            // {
+            //     // 다음 두 번째 타겟팅을 위해 S_RequestTargetForPlay 패킷을 targetIndex만 1로 변경해서 유니티에 한 번 더 보내고 대기합니다!
+            //     await _room.SendMessageToPlayerAsync(...);
+            //     return;
+            // }
+            // =================================================================
+
+            // 단일 타겟 지정 완료 처리 시작!
+            _pendingPlayTargets.Add(action.selectedEntityId);
+            int finalTargetId = _pendingPlayTargets[0];
+
+            // 최종 소환 및 자원 차감 돌입
+            await ExecuteCardPlayWithTargetAsync(senderUid, card, _pendingPlayPosition, finalTargetId);
+
+            // 초기화 및 복구
+            ClearPendingPlayState();
+            _currentPhase = "Main";
+        }
+
+        public async Task ProcessTargetChoiceAsync(string uid, C_ValidTargetRequest targetReq)
+        {
+            PlayerState currentPlayer = GetPlayerState(uid);
+            GameCard? targetCard = currentPlayer.Hand.FirstOrDefault(c => c.InstanceId == targetReq.CardEntityId);
+
+            if (targetCard != null)
+            {
+                // 3. 완성된 TargetValidator를 사용해 조건에 맞는 대상 ID 목록 추출
+                var validIds = TargetValidator.GetValidTargetIds(this, targetCard, uid);
+
+                // 4. 결과를 클라이언트로 전송
+                var responseMsg = new S_ValidTargetResponse
+                {
+                    action = GameActionType.VALID_TARGETS_RESPONSE,
+                    CardEntityId = targetReq.CardEntityId,
+                    ValidTargetIds = validIds ?? new List<int>()
+                };
+
+                string targetListStr = (responseMsg.ValidTargetIds != null && responseMsg.ValidTargetIds.Count > 0)
+                    ? string.Join(", ", responseMsg.ValidTargetIds)
+                    : "없음(0개)";
+                Console.WriteLine($"[TargetValidator/S_ValidTargetResponse] 🎯 플레이어 {uid} 카드 '{targetCard.CardId}'({targetCard.InstanceId}) 타겟 목록 계산 완료 -> 유효 타겟 IDs: [{targetListStr}]");
+                
+                await _room.SendMessageToPlayerAsync(currentPlayer.PlayerRef, JsonConvert.SerializeObject(responseMsg));
+            }
+            else
+            {
+                Console.WriteLine($"[ProcessTargetChoiceAsync] ⚠️ 손패에서 카드({targetReq.CardEntityId})를 찾을 수 없습니다.");
             }
         }
 
@@ -1183,6 +1581,23 @@ namespace GameServer
                 // 상대방(Opponent)의 UID를 가져와서 소환 함수의 소유자로 넘겨줍니다!
                 PlayerState opp = GetPlayerState(senderUid, true);
                 SummonEntityAtPosition(opp.Uid, _pendingChoiceData, action.selectedPosition);
+            }
+
+            _pendingChoiceCount--;
+
+            if (_pendingChoiceCount > 0)
+            {
+                await FlushUpdatesAsync(); 
+                
+                await RequestPlayerChoiceAsync(
+                    senderUid, 
+                    _pendingChoiceType, 
+                    _pendingChoiceData, 
+                    $"남은 소환: {_pendingChoiceCount}회. 다음 위치를 선택해주세요.", 
+                    0, 
+                    _pendingChoiceCount);
+                    
+                return; // 여기서 멈추고 다시 클라이언트의 응답을 기다림
             }
 
             // 2. 메모리 초기화 및 상태 복구
@@ -1231,7 +1646,8 @@ namespace GameServer
 
             // 4. 새로운 고유 인스턴스 ID 발급 및 GameCard 객체 생성
             string newInstanceId = $"EffectToken_{Guid.NewGuid().ToString("N").Substring(0, 8)}";
-            GameCard newCard = new GameCard(cardId, newInstanceId);
+            GameCard newCard = new GameCard(cardId, newInstanceId) { OwnerUid = ownerUid };
+            newCard.UpdateZone(GameServer.Effects.Zone.Field, this.EventSystem);
 
             // 5. 전역 엔티티 ID 발급 및 GameEntity 객체 생성
             int eid = _nextGlobalEntityId++;
@@ -1248,11 +1664,57 @@ namespace GameServer
             // 7. 클라이언트 연출을 위한 SUMMON 이벤트 로그 기록
             // 핵심: 손에서 직접 낸 것이 아니므로 EffectTriggerType.NONE을 사용하여 조용히 등장하는 연출을 유도합니다.
             LogEvent(GameEventType.SUMMON, newEntity.EntityId, 0, emptySlot, newCard.CardId, EffectTriggerType.NONE, newEntity.ToEntityData());
+            OnMinionSummoned?.Invoke(p.Uid, newCard.CardId, emptySlot);
 
             // 8. 클라이언트 데이터 동기화를 위해 변경 대기열에 추가
             AddPendingUpdate(newEntity);
 
             // ※ 주의: 효과 소환이므로 마나 소모 코드가 없으며, ExecuteEffectsAsync(ON_PLAY) 역시 호출하지 않습니다.
+        }
+
+        /// <summary>
+        /// 이미 생성되어 있는 카드 객체(예: 덱이나 손패에 있던 카드)를 그대로 필드에 소환합니다.
+        /// 덱 버프나 핸드 버프 등 기존 스탯 변화가 그대로 유지됩니다.
+        /// </summary>
+        public void SummonExistingCard(string ownerUid, GameCard card)
+        {
+            PlayerState p = GetPlayerState(ownerUid);
+
+            // 1. 하수인인지 멤버인지 판별하여 타겟 존 설정
+            bool isMember = card.Type == CardType.멤버;
+            GameEntity?[] targetZone = isMember ? p.MemberZone : p.Field;
+
+            // 2. 타겟 존에서 가장 왼쪽의 빈자리(인덱스) 찾기
+            int emptySlot = -1;
+            for (int i = 0; i < targetZone.Length; i++)
+            {
+                if (targetZone[i] == null) { emptySlot = i; break; }
+            }
+
+            // 빈자리가 없으면 소환 실패 (카드가 증발하지 않도록 다시 덱/패에 넣는 기획이 필요할 수도 있습니다)
+            if (emptySlot == -1) return; 
+
+            // 3. 카드의 위치(Zone)를 필드로 업데이트! (구독 중인 효과 갱신)
+            card.UpdateZone(GameServer.Effects.Zone.Field, this.EventSystem);
+
+            // 4. 전역 엔티티 ID 발급 및 개체(Entity) 생성
+            int eid = _nextGlobalEntityId++;
+            GameEntity newEntity = new GameEntity(eid, card, ownerUid)
+            {
+                Position = emptySlot,
+                IsMember = isMember
+            };
+
+            // 5. 서버에 등록
+            _allEntities.Add(eid, newEntity);
+            targetZone[emptySlot] = newEntity;
+
+            // 6. [핵심] 클라이언트 연출 로그 (이미 만들어두신 SUMMON_FROM_DECK 활용!)
+            LogEvent(GameEventType.SUMMON_FROM_DECK, newEntity.EntityId, 0, emptySlot, card.CardId, EffectTriggerType.NONE, newEntity.ToEntityData());
+            OnMinionSummoned?.Invoke(p.Uid, card.CardId, emptySlot);
+
+            // 7. 클라이언트 데이터 동기화
+            AddPendingUpdate(newEntity);
         }
 
         /// <summary>
@@ -1284,7 +1746,8 @@ namespace GameServer
 
             // 4. 새로운 고유 인스턴스 ID 발급 및 GameCard 객체 생성
             string newInstanceId = $"EffectToken_{Guid.NewGuid().ToString("N").Substring(0, 8)}";
-            GameCard newCard = new GameCard(cardId, newInstanceId);
+            GameCard newCard = new GameCard(cardId, newInstanceId) { OwnerUid = ownerUid };
+            newCard.UpdateZone(GameServer.Effects.Zone.Field, this.EventSystem);
 
             // 5. 전역 엔티티 ID 발급 및 GameEntity 객체 생성
             int eid = _nextGlobalEntityId++;
@@ -1301,11 +1764,87 @@ namespace GameServer
             // 7. 클라이언트 연출을 위한 SUMMON 이벤트 로그 기록
             // (손에서 직접 낸 것이 아니므로 EffectTriggerType.NONE을 사용하여 조용히 등장하는 마법 연출 유도)
             LogEvent(GameEventType.SUMMON, newEntity.EntityId, 0, targetPos, newCard.CardId, EffectTriggerType.NONE, newEntity.ToEntityData());
+            OnMinionSummoned?.Invoke(p.Uid, newCard.CardId, targetPos);
 
             // 8. 클라이언트 데이터 동기화를 위해 변경 대기열에 추가
             AddPendingUpdate(newEntity);
 
             // ※ 주의: 위치 지정 소환 역시 '효과에 의한 소환'이므로 전투의 함성(ON_PLAY)을 발동시키지 않습니다.
+        }
+
+        /// <summary>
+        /// 플레이어가 소환된 하수인을 드래그할 때 공격할 수 있는 대상을 검증하여 응답합니다.
+        /// </summary>
+        public async Task ProcessValidAttackTargetsRequestAsync(string senderUid, C_ValidAttackTargetsRequest action)
+        {
+            PlayerState me = GetPlayerState(senderUid);
+            PlayerState opp = GetPlayerState(senderUid, true);
+
+            var response = new S_ValidAttackTargetsResponse
+            {
+                attackerEntityId = action.attackerEntityId
+            };
+
+            // 1. 공격자 개체 유효성 확인 (존재 여부, 소유권, 공격 가능 상태, 공격 여부 검증)
+            if (!_allEntities.TryGetValue(action.attackerEntityId, out var attacker))
+            {
+                Console.WriteLine($"[ProcessValidAttackTargetsRequest] 실패: 공격자 ID({action.attackerEntityId})를 찾을 수 없습니다.");
+                await _room.SendMessageToPlayerAsync(me.PlayerRef, JsonConvert.SerializeObject(response));
+                return;
+            }
+
+            if (attacker.OwnerUid != senderUid || !attacker.CanAttack || attacker.HasAttacked)
+            {
+                // 공격이 불가능한 상태라면 유효 공격 대상 목록을 빈 배열로 반환하여 드래그 비활성화 유도
+                await _room.SendMessageToPlayerAsync(me.PlayerRef, JsonConvert.SerializeObject(response));
+                return;
+            }
+
+            // 2. 적의 살아있는 캐릭터 수집 (영웅, 필드 하수인, 멤버존 하수인)
+            var enemyCandidates = new List<GameEntity>();
+            
+            if (opp.Leader != null && opp.Leader.Health > 0)
+            {
+                enemyCandidates.Add(opp.Leader);
+            }
+            
+            foreach (var e in opp.Field)
+            {
+                if (e != null && e.Health > 0)
+                {
+                    enemyCandidates.Add(e);
+                }
+            }
+            
+            foreach (var e in opp.MemberZone)
+            {
+                if (e != null && e.Health > 0)
+                {
+                    enemyCandidates.Add(e);
+                }
+            }
+
+            // 3. 적 필드에 도발(Taunt) 하수인이 있는지 판별
+            // 영웅이나 멤버존을 제외하고, 'Field'에 수집된 일반 하수인 중 Taunt 키워드를 가진 자를 색출합니다.
+            var tauntEnemies = enemyCandidates
+                .Where(e => !e.IsLeader && !e.IsMember && e.Keywords != null && e.Keywords.Contains(CardKeywords.Taunt))
+                .ToList();
+
+            // 4. 타겟 최종 결정
+            if (tauntEnemies.Count > 0)
+            {
+                // 적 진영에 도발 하수인이 하나라도 있으면, 오직 도발 대상들만 공격 가능 리스트에 들어갑니다.
+                response.validDefenderEntityIds = tauntEnemies.Select(e => e.EntityId).ToList();
+                Console.WriteLine($"[ProcessValidAttackTargetsRequest] 도발 유닛 활성화로 타겟 제한됨. (공격자: {attacker.SourceCard.CardId})");
+            }
+            else
+            {
+                // 도발이 없다면 생존한 모든 적 캐릭터가 유효 타겟입니다.
+                response.validDefenderEntityIds = enemyCandidates.Select(e => e.EntityId).ToList();
+            }
+
+            // 5. 요청한 클라이언트에게 최종 타겟 목록 반환
+            await _room.SendMessageToPlayerAsync(me.PlayerRef, JsonConvert.SerializeObject(response));
         }
 
         /// <summary>
@@ -1342,7 +1881,7 @@ namespace GameServer
         {
             // _pendingUpdates.Clear();
             // 서로의 공격력만큼 체력 차감
-            ApplyDamage(def, att.Attack, att.EntityId);
+            await ApplyDamageAsync(def, att.Attack, att.EntityId);
             
             // 방어자가 공격력이 0이 아니라면 이벤트로그에 반격추가
             if (def.Attack > 0)
@@ -1350,21 +1889,97 @@ namespace GameServer
                 LogEvent(GameEventType.ATTACK, def.EntityId, att.EntityId);
             }
 
-            ApplyDamage(att, def.Attack, def.EntityId);
+            await ApplyDamageAsync(att, def.Attack, def.EntityId);
+        }
+
+        // 카드의 효과를 발동한 대상을 찾는 기능
+        public GameEntity? FindEntityByCard(GameCard card)
+        {
+            var p = GetPlayerState(card.OwnerUid);
+            if (p == null) return null;
+            
+            if (p.Leader?.SourceCard?.InstanceId == card.InstanceId) return p.Leader;
+            
+            foreach (var e in p.Field)
+            {
+                if (e != null && e.SourceCard.InstanceId == card.InstanceId) return e;
+            }
+            foreach (var e in p.MemberZone)
+            {
+                if (e != null && e.SourceCard.InstanceId == card.InstanceId) return e;
+            }
+            return null;
+        }
+
+
+        // ==================================================================
+        // 카드의 효과 적용
+        // ==================================================================
+
+        /// <summary>
+        /// 특정 개체가 강제공격을 하게 만들고 업데이트 목록에 추가합니다.
+        /// </summary>
+        public async Task ApplyForceAttackAsync(GameEntity attacker, GameEntity? defender, EffectTriggerType trigger)
+        {
+            PlayerState attOwner = GetPlayerState(attacker.OwnerUid);
+            PlayerState attOpp = GetPlayerState(attacker.OwnerUid, true);
+
+            // 방어자가 딱히 지정되지 않았다면(null), 살아있는 무작위 적을 탐색 (기존 로직 유지)
+            if (defender == null)
+            {
+                var enemies = new List<GameEntity> { attOpp.Leader };
+                enemies.AddRange(attOpp.Field.Where(e => e != null && e.Health > 0)!);
+                enemies.AddRange(attOpp.MemberZone.Where(e => e != null && e.Health > 0)!);
+
+                if (enemies.Count > 0)
+                {
+                    defender = enemies[Rng.Next(enemies.Count)];
+                }
+            }
+
+            // 공격자와 방어자가 유효하고, 자기 자신을 때리는 게 아닐 때만 전투 실행
+            if (defender != null && defender.Health > 0 && attacker.EntityId != defender.EntityId)
+            {
+                Console.WriteLine($"[EffectProcessor] ⚔️ 강제 공격 실행: {attacker.EntityId} -> {defender.EntityId}");
+                
+                // 클라이언트 연출용 로그
+                LogEvent(GameEventType.ATTACK, attacker.EntityId, defender.EntityId, 0, null, trigger);
+                
+                // 실제 데미지 교환 및 사망자 처리
+                await ResolveCombatAsync(attacker, defender);
+                await ProcessDeathsAsync();
+            }
+            else
+            {
+                Console.WriteLine($"[EffectProcessor] ⚠️ 강제 공격 실패: 유효한 방어자가 없습니다.");
+            }
         }
 
         /// <summary>
-        /// 특정 개체에 데미지를 입히고 업데이트 목록에 추가합니다.
+        /// 특정 개체에 데미지를 입히고 업데이트 목록에 추가합니다. (비동기 버전)
         /// </summary>
-        public void ApplyDamage(GameEntity target, int amount, int sourceId = 0, EffectTriggerType triggerType = EffectTriggerType.NONE)
+        public async Task ApplyDamageAsync(GameEntity target, int amount, int sourceId = 0, EffectTriggerType triggerType = EffectTriggerType.NONE)
         {
             if (amount <= 0) return;
             target.Health -= amount;
-            
-            // [수정됨] triggerType 파라미터를 추가로 넘겨줍니다.
+
+            // 데미지 발생 이벤트 클라이언트에 전송 대기
             LogEvent(GameEventType.DAMAGE, sourceId, target.EntityId, amount, null, triggerType);
-            ApllyAttacked!(sourceId.ToString(), target.EntityId.ToString(), amount);
             AddPendingUpdate(target);
+            OnDamageApplied?.Invoke(target.SourceCard.CardName, amount, sourceId);
+
+            // =================================================================
+            // 🚀 [신규 추가] 피해를 입었을 때 ON_DAMAGE 이벤트 발행!
+            // =================================================================
+            // 피해를 입은 당사자 카드와 개체를 context에 실어서 이벤트를 전파합니다.
+            var damageContext = new GameServer.Effects.EffectContext(target.OwnerUid, target.SourceCard, EffectTriggerType.ON_DAMAGE)
+            {
+                SourceEntity = target,
+                TargetEntity = target
+            };
+
+            // 비동기로 하수인의 데미지 반응 효과(예: 드로우)들을 즉시 실행합니다.
+            await EventSystem.PublishAsync(EffectTriggerType.ON_DAMAGE, damageContext);
         }
         /// <summary>
         /// 특정 개체에 힐을 하고 업데이트 목록에 추가합니다.
@@ -1376,22 +1991,108 @@ namespace GameServer
             int actualHeal = target.Health - oldHealth;
             Console.WriteLine($"[GameState] {target.EntityId} 회복 {actualHeal}");
             
-            if (actualHeal > 0) LogEvent(GameEventType.HEAL, sourceId, target.EntityId, actualHeal);
-            AddPendingUpdate(target);
-        }
-        /// <summary>
-        /// 특정 개체에 버프를 주고 업데이트 목록에 추가합니다.
-        /// </summary>
-        public void ApplyBuff(GameEntity target, int attackBuff, int healthBuff, int sourceId = 0)
-        {
-            target.Attack += attackBuff;
-            target.Health += healthBuff;
-            target.MaxHealth += healthBuff; 
-            
-            LogEvent(GameEventType.BUFF, sourceId, target.EntityId, attackBuff, healthBuff.ToString());
+            if (actualHeal > 0) 
+            {
+                LogEvent(GameEventType.HEAL, sourceId, target.EntityId, actualHeal);
+                OnHealApplied?.Invoke(target.SourceCard.CardName, actualHeal, sourceId);
+            }
             AddPendingUpdate(target);
         }
 
+        /// <summary>
+        /// 특정 개체에 버프를 주고 업데이트 목록에 추가합니다.
+        /// </summary>
+        public void ApplyBuff(GameEntity target, int attackBuff, int healthBuff, int sourceId = 0, EffectTriggerType triggerType = EffectTriggerType.NONE)
+        {
+            target.Attack += attackBuff;
+            target.Health += healthBuff;
+            target.MaxHealth += healthBuff;
+
+            target.Enchantments.Add(new EnchantmentInfo
+            {
+                sourceEntityId = sourceId,
+                effectType = GameEventType.BUFF,
+                attackMod = attackBuff,
+                healthMod = healthBuff
+            });
+
+            // triggerType을 LogEvent의 마지막 파라미터 위치에 맞게 전달
+            LogEvent(GameEventType.BUFF, sourceId, target.EntityId, attackBuff, healthBuff.ToString(), triggerType);
+            AddPendingUpdate(target);
+        }
+
+        /// <summary>
+        /// 손패 중 지정된 특정 카드 리스트에만 버프를 적용하고 클라이언트에 일괄 알립니다.
+        /// </summary>
+        public async Task ApplyHandBuffAsync(string ownerUid, int attackBuff, int healthBuff, int costBuff, List<GameCard> targetCards)
+        {
+            PlayerState p = GetPlayerState(ownerUid);
+            List<GameCard> buffedCards = new List<GameCard>();
+
+            // 던져진 카드 리스트만 순회하므로 내부 코드가 매우 깔끔해집니다.
+            foreach (var card in targetCards)
+            {
+                // 안전장치: 손패에 실제로 존재하는 하수인 카드인 경우에만 버프를 적용합니다.
+                if (p.Hand.Contains(card) && card.Type == CardType.하수인)
+                {
+                    card.CurrentAttack += attackBuff;
+                    card.CurrentHealth += healthBuff;
+                    card.CurrentCost += costBuff;
+                    card.CurrentCost = Math.Max(0, card.CurrentCost); // 코스트 안전가드
+
+                    buffedCards.Add(card);
+                }
+            }
+
+            // 버프 성공 시 단 한 번만 패킷을 전송하여 네트워크를 최적화합니다.
+            if (buffedCards.Count > 0)
+            {
+                LogEvent(GameEventType.BUFF_HAND, 0, 0, attackBuff, healthBuff.ToString());
+                AddLog("System", "BUFF_HAND", $"{ownerUid}의 손패 하수인 {buffedCards.Count}장이 공격력 {attackBuff}/체력 {healthBuff} 버프를 받았습니다.");
+
+                var updateMsg = new S_UpdateHandCards
+                {
+                    action = GameActionType.UPDATE_HAND_CARDS,
+                    updatedCards = buffedCards.Select(c => c.ToCardInfo()).ToList()
+                };
+                await _room.SendMessageToPlayerAsync(p.PlayerRef, JsonConvert.SerializeObject(updateMsg));
+            }
+        }
+
+        /// <summary>
+        /// 덱에 있는 카드 중 특정 조건에 맞는 카드에만 버프를 누적시킵니다.
+        /// </summary>
+        public Task ApplyDeckBuffAsync(string ownerUid, int attackBuff, int healthBuff, int costBuff, List<GameCard> targetCards)
+        {
+            PlayerState p = GetPlayerState(ownerUid);
+            List<GameCard> buffedCards = new List<GameCard>();
+
+            // 던져진 카드 리스트만 순회하므로 내부 코드가 매우 깔끔해집니다.
+            foreach (var card in targetCards)
+            {
+                // 안전장치: 덱에 실제로 존재하는 하수인 카드인 경우에만 버프를 적용합니다.
+                if (p.Deck.Contains(card) && card.Type == CardType.하수인)
+                {
+                    card.CurrentAttack += attackBuff;
+                    card.CurrentHealth += healthBuff;
+                    card.CurrentCost += costBuff;
+                    card.CurrentCost = Math.Max(0, card.CurrentCost); // 코스트 안전가드
+
+                    buffedCards.Add(card);
+                }
+            }
+
+            // 버프 성공 시 단 한 번만 패킷을 전송하여 네트워크를 최적화합니다.
+            if (buffedCards.Count > 0)
+            {
+                LogEvent(GameEventType.BUFF_DECK, 0, 0, attackBuff, healthBuff.ToString());
+                AddLog("System", "BUFF_DECK", $"{ownerUid}의 덱 하수인 {buffedCards.Count}장이 공격력 {attackBuff}/체력 {healthBuff} 버프를 받았습니다.");
+            }
+
+            return Task.CompletedTask;
+        }
+
+        
         /// <summary> 특정 개체에 '속박(Bind)'을 부여합니다. </summary>
         public void ApplyBind(GameEntity target, int sourceId = 0)
         {
@@ -1399,6 +2100,12 @@ namespace GameServer
             {
                 target.Keywords.Add(CardKeywords.Bind);
             }
+
+            target.Enchantments.Add(new EnchantmentInfo
+            {
+                sourceEntityId = sourceId,
+                effectType = GameEventType.BIND,
+            });
             target.CanAttack = false; // 즉시 공격 불가 상태로 만듦
             LogEvent(GameEventType.BIND, sourceId, target.EntityId);
             AddPendingUpdate(target);
@@ -1414,21 +2121,35 @@ namespace GameServer
             target.MaxHealth = target.SourceCard.OriginalHealth;
             if (target.Health > target.MaxHealth) target.Health = target.MaxHealth;
 
+            target.Enchantments.Add(new EnchantmentInfo
+            {
+                sourceEntityId = sourceId,
+                effectType = GameEventType.SILENCE,
+            });
             LogEvent(GameEventType.SILENCE, sourceId, target.EntityId);
             AddPendingUpdate(target);
         }
 
         /// <summary> 특정 개체에 새로운 '키워드(Keyword)'를 부여합니다. </summary>
-        public void GrantKeyword(GameEntity target, string keywordStr, int sourceId = 0)
+        public void GrantKeyword(GameEntity target, List<string> keywordStr, int sourceId = 0)
         {
-            if (Enum.TryParse<CardKeywords>(keywordStr, true, out var keyword))
+            for(int i = 0; i < keywordStr.Count; i++)
+            {
+                if (Enum.TryParse<CardKeywords>(keywordStr[i], true, out var keyword))
             {
                 if (target.Keywords != null && !target.Keywords.Contains(keyword))
                 {
                     target.Keywords.Add(keyword);
+                    target.Enchantments.Add(new EnchantmentInfo
+                    {
+                        sourceEntityId = sourceId,
+                        effectType = GameEventType.GRANT_KEYWORD,
+                        grantedKeyword = keywordStr[i]
+                    });
                     LogEvent(GameEventType.GRANT_KEYWORD, sourceId, target.EntityId);
                     AddPendingUpdate(target);
                 }
+            }
             }
         }
 
@@ -1442,49 +2163,77 @@ namespace GameServer
             // 마나 변화는 즉시 브로드캐스트가 필요하므로 별도 로그 전송 구조 추가 필요
         }
 
+
         /// <summary>
         /// 필드 위 모든 개체의 체력을 확인하여 0 이하인 개체를 제거하고 '죽음의 메아리'를 처리합니다.
         /// </summary>
         /// <returns>사망자가 발생했으면 true</returns>
-        private async Task<bool> ProcessDeathsAsync()
+        public async Task<bool> ProcessDeathsAsync()
         {
             if(_isGameOver) return true;
 
-            // _eventBuffer.Clear();
-            // _pendingUpdates.Clear();
-
             // 1. 죽은 개체들 필터링
-            var deadEntities = _allEntities.Values.Where(e => e.Health <= 0).ToList();
+            var deadEntities = _allEntities.Values.Where(e => e.Health <= 0 || e.IsDestroyed).ToList();
             if (deadEntities.Count == 0) return false;
 
             foreach (var dead in deadEntities)
             {
                 LogEvent(GameEventType.DEATH, dead.EntityId);
-                
-                // [수정됨] 2. '죽음의 메아리(ON_DEATH)' 효과가 카드에 실제로 존재할 때만 이벤트 기록
-                if (dead.SourceCard.Effects != null && dead.SourceCard.Effects.Any(e => e.Trigger == EffectTriggerType.ON_DEATH))
+                if (!dead.IsLeader)
+                {
+                    OnMinionDestroyed?.Invoke(dead.OwnerUid, dead.SourceCard.CardName);
+                }
+
+                // =================================================================
+                // [개선 1] 사망한 하수인의 필드 슬롯을 먼저 null로 비워 공간을 확보합니다.
+                // 이 처리를 먼저 해야 죽음의 메아리로 소환되는 토큰 하수인이 이 빈 자리에 들어갈 수 있습니다.
+                // =================================================================
+                PlayerState owner = GetPlayerState(dead.OwnerUid);
+                for(int i=0; i<owner.Field.Length; i++) 
+                {
+                    if (owner.Field[i] == dead) owner.Field[i] = null;
+                }
+                for(int i=0; i<owner.MemberZone.Length; i++) 
+                {
+                    if (owner.MemberZone[i] == dead) owner.MemberZone[i] = null;
+                }
+
+                // =================================================================
+                // [개선 2] 슬롯은 비었지만 아직 UpdateZone(Graveyard)을 호출하지 않았으므로 
+                // 효과 구독은 유지된 상태입니다. 이 상태에서 죽음의 메아리를 안전하게 실행합니다.
+                // =================================================================
+                if (dead.SourceCard.NewEffects.Any(e => e.Trigger == EffectTriggerType.ON_DEATH))
                 {
                     LogEvent(GameEventType.EFFECT_TRIGGER, dead.EntityId, 0, 0, null, EffectTriggerType.ON_DEATH);
-                }
-                await _effectProcessor.ExecuteEffectsAsync(dead.SourceCard, dead, null, EffectTriggerType.ON_DEATH, dead.OwnerUid);
 
-                // 3. 서버 데이터 저장소에서 제거
+                    var context = new GameServer.Effects.EffectContext(dead.OwnerUid, dead.SourceCard, EffectTriggerType.ON_DEATH)
+                    {
+                        SourceEntity = dead,
+                        TargetEntity = dead
+                    };
+
+                    // 비동기로 죽음의 메아리 효과를 즉시 실시간 전파 및 실행합니다.
+                    await EventSystem.PublishAsync(EffectTriggerType.ON_DEATH, context);
+                }
+
+                // =================================================================
+                // [개선 3] 효과 해결이 모두 끝난 후에 카드를 무덤 구역으로 보내고 구독을 해제합니다.
+                // =================================================================
+                dead.SourceCard.UpdateZone(GameServer.Effects.Zone.Graveyard, this.EventSystem);
+                owner.Graveyard.Add(dead.SourceCard);
+
+                // 3. 서버 전역 관리 딕셔너리에서 최종 제거
                 _allEntities.Remove(dead.EntityId);
-                
-                // 4. 소유 플레이어의 필드/멤버존 슬롯 비우기
-                PlayerState owner = GetPlayerState(dead.OwnerUid);
-                for(int i=0; i<owner.Field.Length; i++) if (owner.Field[i] == dead) owner.Field[i] = null;
-                for(int i=0; i<owner.MemberZone.Length; i++) if (owner.MemberZone[i] == dead) owner.MemberZone[i] = null;
 
                 // 5. 클라이언트에 알릴 데이터 구성 (체력 0 상태)
                 var dData = dead.ToEntityData();
-                dData.health = 0; 
+                dData.health = 0;
                 _pendingUpdates.Add(dData);
             }
 
             // 6. 사망 정보 즉시 전송
-            await BroadcastUpdatesAsync(_playerA.Uid); 
-            
+            await BroadcastUpdatesAsync(_playerA.Uid);
+
             // 7. 게임 종료 조건 확인 (영웅 사망 시)
             if (_playerA.Leader.Health <= 0 && _playerB.Leader.Health <= 0)
             {
@@ -1569,16 +2318,113 @@ namespace GameServer
         }
 
         /// <summary>
-        /// 게임 승패가 결정되었을 때 호출되어 결과를 전송하고 세션을 정리합니다.
+        /// 게임 승패가 결정되었을 때 호출되어 결과를 전송하고, 승자와 패자에게 전적/경험치/레벨/골드/점수 보상을 적용합니다.
         /// </summary>
         private async Task EndGameAsync(string winner, string reason)
         {
             if(_isGameOver) return;
             _isGameOver = true;
             _currentPhase = "GameOver";
+
+            string loser = (winner == _playerA.Uid) ? _playerB.Uid : _playerA.Uid;
+
             string json = JsonConvert.SerializeObject(new S_GameOver { action=GameActionType.GAME_OVER, winnerUid=winner, reason=reason });
             await _room.SendMessageToPlayerAsync(_playerA.PlayerRef, json);
             await _room.SendMessageToPlayerAsync(_playerB.PlayerRef, json);
+
+            // 🏆 승자 및 패자 보상 / 전적 / 레벨업 일괄 처리
+            _ = ProcessMatchRewardsAsync(winner, loser);
+        }
+
+        /// <summary>
+        /// 대전 종료 후 승자와 패자의 데이터(골드, 경험치, 레벨, 점수, 전적)를 계산하여 Firestore에 저장합니다.
+        /// </summary>
+        private async Task ProcessMatchRewardsAsync(string winnerUid, string loserUid)
+        {
+            try
+            {
+                if (_room.Db == null) return;
+
+                // 1. 승자 보상: 골드 +100, 경험치 +100, 점수 +30, 승리 전적 +1
+                if (!string.IsNullOrEmpty(winnerUid) && !winnerUid.StartsWith("BOT_"))
+                {
+                    await ApplyPlayerMatchOutcomeAsync(winnerUid, isWinner: true, goldChange: 100, expChange: 100, scoreChange: 30);
+                }
+
+                // 2. 패자 보상: 골드 +20, 경험치 +30, 점수 -15, 패배 전적 +1
+                if (!string.IsNullOrEmpty(loserUid) && !loserUid.StartsWith("BOT_"))
+                {
+                    await ApplyPlayerMatchOutcomeAsync(loserUid, isWinner: false, goldChange: 20, expChange: 30, scoreChange: -15);
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[MatchReward] ❌ 대전 결과 보상 처리 중 오류 발생: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// 개별 플레이어의 Firestore 문서를 트랜잭션으로 안전하게 업데이트하고 레벨업 여부를 판정합니다.
+        /// </summary>
+        private async Task ApplyPlayerMatchOutcomeAsync(string uid, bool isWinner, int goldChange, int expChange, int scoreChange)
+        {
+            try
+            {
+                DocumentReference userRef = _room.Db.Collection("Users").Document(uid);
+                await _room.Db.RunTransactionAsync(async transaction =>
+                {
+                    DocumentSnapshot snapshot = await transaction.GetSnapshotAsync(userRef);
+                    if (!snapshot.Exists) return;
+
+                    UserData user = snapshot.ConvertTo<UserData>();
+
+                    // 1. 골드 갱신
+                    int newGold = Math.Max(0, user.Gold + goldChange);
+
+                    // 2. 점수(랭크 포인트) 갱신 (최소 0점)
+                    int newScore = Math.Max(0, user.Score + scoreChange);
+
+                    // 3. 전적 갱신
+                    int newWinCount = user.WinCount + (isWinner ? 1 : 0);
+                    int newLossCount = user.LossCount + (isWinner ? 0 : 1);
+
+                    // 4. 경험치 및 레벨업 계산 (필요 경험치 = 현재레벨 * 100)
+                    int currentLevel = user.Level > 0 ? user.Level : 1;
+                    int currentExp = user.Exp + expChange;
+
+                    while (true)
+                    {
+                        int requiredExp = currentLevel * 100;
+                        if (currentExp >= requiredExp)
+                        {
+                            currentExp -= requiredExp;
+                            currentLevel++;
+                            Console.WriteLine($"[LevelUp] 🎉 플레이어 {uid} 레벨업! (Lv.{currentLevel})");
+                        }
+                        else
+                        {
+                            break;
+                        }
+                    }
+
+                    Dictionary<string, object> updates = new Dictionary<string, object>
+                    {
+                        { "Gold", newGold },
+                        { "Score", newScore },
+                        { "Level", currentLevel },
+                        { "Exp", currentExp },
+                        { "WinCount", newWinCount },
+                        { "LossCount", newLossCount }
+                    };
+
+                    transaction.Update(userRef, updates);
+                    Console.WriteLine($"[MatchReward] 🎮 플레이어 {uid} ({(isWinner ? "승리" : "패배")}): Gold={newGold}(+{(goldChange >= 0 ? "+" : "")}{goldChange}), Lv={currentLevel}, Exp={currentExp}(+{expChange}), Score={newScore}({(scoreChange >= 0 ? "+" : "")}{scoreChange}), 전적={newWinCount}승 {newLossCount}패");
+                });
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[MatchReward] ❌ 플레이어 {uid} 보상 적용 실패: {ex.Message}");
+            }
         }
 
         // 대시보드 전용
@@ -1612,34 +2458,37 @@ namespace GameServer
         // GameState 클래스 내부에 스냅샷 반환 메서드 추가
         public GameSnapshot GetSnapshot()
         {
-            lock (_lock)
+            return new GameSnapshot
             {
-                return new GameSnapshot
-                {
-                    PlayerAUid = _playerA.Uid,
-                    PlayerBUid = _playerB.Uid,
-                    CurrentTurnPlayerUid = _currentTurnPlayerUid,
-                    CurrentPhase = _currentPhase ?? "Waiting",
-                    PlayerAMana = _playerA.CurrentMana,
-                    PlayerBMana = _playerB.CurrentMana,
-                    PlayerAHealth = _playerA.Leader?.Health ?? 0,
-                    PlayerBHealth = _playerB.Leader?.Health ?? 0,
-                    
-                    // 대시보드 타이머를 위한 시간 (임시로 현재시간+60초 등 페이즈별로 저장된 변수 활용 필요)
-                    TurnEndTime = _turnEndTime,
+                // 1. 플레이어 기본 정보 및 마나, 체력 [1, 2]
+                PlayerAUid = _playerA.Uid,
+                PlayerBUid = _playerB.Uid,
+                CurrentTurnPlayerUid = _currentTurnPlayerUid,
+                CurrentPhase = _currentPhase,
+                PlayerAMana = _playerA.CurrentMana,
+                PlayerBMana = _playerB.CurrentMana,
+                PlayerAHealth = _playerA.Leader.Health,
+                PlayerBHealth = _playerB.Leader.Health,
+                TurnEndTime = _turnEndTime,
 
-                    // 엔티티 및 손패 데이터를 변환하여 전달
-                    PlayerAField = _playerA.Field.Select(e => e?.ToEntityData()).ToList(),
-                    PlayerBField = _playerB.Field.Select(e => e?.ToEntityData()).ToList(),
-                    PlayerAMember = _playerA.MemberZone.Select(e => e?.ToEntityData()).ToList(),
-                    PlayerBMember = _playerB.MemberZone.Select(e => e?.ToEntityData()).ToList(),
-                    
-                    PlayerAHand = _playerA.Hand.Select(c => c.ToCardInfo()).ToList(),
-                    PlayerBHand = _playerB.Hand.Select(c => c.ToCardInfo()).ToList(),
+                // 2. 필드 상황 (5칸의 하수인 정보) [1, 3]
+                // 필드 위 GameEntity 객체들을 클라이언트가 읽을 수 있는 EntityData 형태로 변환(ToEntityData)하여 전달합니다.
+                PlayerAField = _playerA.Field.Select(e => e?.ToEntityData()).ToList(),
+                PlayerBField = _playerB.Field.Select(e => e?.ToEntityData()).ToList(),
 
-                    Logs = _actionLogs.TakeLast(50).ToList()
-                };
-            }
+                // 3. 특수 멤버 존 상황 (1칸) [1, 3]
+                PlayerAMember = _playerA.MemberZone.Select(e => e?.ToEntityData()).ToList(),
+                PlayerBMember = _playerB.MemberZone.Select(e => e?.ToEntityData()).ToList(),
+
+                // 4. 각 플레이어의 손패 정보 (실시간 카드 목록) [1, 3]
+                // 손에 든 GameCard 객체들을 CardInfo 형태로 변환(ToCardInfo)하여 대시보드로 보냅니다.
+                PlayerAHand = _playerA.Hand.Select(c => c.ToCardInfo()).ToList(),
+                PlayerBHand = _playerB.Hand.Select(c => c.ToCardInfo()).ToList(),
+
+                // 5. 최근 게임 로그 [3]
+                // 게임 중에 기록된 전체 액션 로그 중 최근 50개만 잘라서 보냅니다.
+                Logs = _actionLogs.TakeLast(100).ToList()
+            };
         }
 
         public void AddLog(string actor, string actionType, string message, object? details = null)

@@ -1,0 +1,376 @@
+This file is a merged representation of a subset of the codebase, containing specifically included files, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of a subset of the repository's contents that is considered the most important context.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Only files matching these patterns are included: **/*.cs
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+AoETargetSelectors.cs
+RandomTargetSelectors.cs
+SingleTargetSelectors.cs
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="AoETargetSelectors.cs">
+namespace GameServer.Effects.TargetSelector
+{
+    // 2-1. 모든 적 하수인 (광역 적)
+    public class AllEnemyMinionsSelector : ITargetSelector
+    {
+        public IEnumerable<GameEntity> GetTargets(GameState state, EffectContext context)
+        {
+            var opp = state.GetPlayerState(context.OwnerUid, true);
+            return opp.Field.Where(e => e != null && e.Health > 0)
+                       .Concat(opp.MemberZone.Where(e => e != null && e.Health > 0))!;
+        }
+    }
+
+    // 2-2. 모든 아군 하수인 (광역 아군)
+    public class AllFriendlyMinionsSelector : ITargetSelector
+    {
+        public IEnumerable<GameEntity> GetTargets(GameState state, EffectContext context)
+        {
+            var me = state.GetPlayerState(context.OwnerUid);
+            return me.Field.Where(e => e != null && e.Health > 0)
+                     .Concat(me.MemberZone.Where(e => e != null && e.Health > 0))!;
+        }
+    }
+
+    // 2-3. 모든 하수인 (공용 - 아군/적 필드 전부)
+    public class AllMinionsSelector : ITargetSelector
+    {
+        public IEnumerable<GameEntity> GetTargets(GameState state, EffectContext context)
+        {
+            var me = state.GetPlayerState(context.OwnerUid);
+            var opp = state.GetPlayerState(context.OwnerUid, true);
+            
+            return me.Field.Where(e => e != null && e.Health > 0)
+                     .Concat(me.MemberZone.Where(e => e != null && e.Health > 0))
+                     .Concat(opp.Field.Where(e => e != null && e.Health > 0))
+                     .Concat(opp.MemberZone.Where(e => e != null && e.Health > 0))!;
+        }
+    }
+
+    // 2-4. 모든 적 (적 필드 전체 + 적 영웅)
+    public class AllEnemiesSelector : ITargetSelector
+    {
+        public IEnumerable<GameEntity> GetTargets(GameState state, EffectContext context)
+        {
+            var opp = state.GetPlayerState(context.OwnerUid, true);
+            var list = opp.Field.Where(e => e != null && e.Health > 0)
+                          .Concat(opp.MemberZone.Where(e => e != null && e.Health > 0)).ToList();
+            list.Add(opp.Leader); // 명치 추가
+            return list!;
+        }
+    }
+
+    // 2-5. 모든 아군 (적 필드 전체 + 적 영웅)
+    public class AllFriendlySelector : ITargetSelector
+    {
+        public IEnumerable<GameEntity> GetTargets(GameState state, EffectContext context)
+        {
+            var me = state.GetPlayerState(context.OwnerUid);
+            var list = me.Field.Where(e => e != null && e.Health > 0)
+                          .Concat(me.MemberZone.Where(e => e != null && e.Health > 0)).ToList();
+            list.Add(me.Leader); // 명치 추가
+            return list!;
+        }
+    }
+
+    // 2-6. 모든 캐릭터 (모든 하수인 + 양쪽 영웅)
+    public class AllCharactersSelector : ITargetSelector
+    {
+        public IEnumerable<GameEntity> GetTargets(GameState state, EffectContext context)
+        {
+            var me = state.GetPlayerState(context.OwnerUid);
+            var opp = state.GetPlayerState(context.OwnerUid, true);
+
+            var list = me.Field.Where(e => e != null && e.Health > 0)
+                         .Concat(me.MemberZone.Where(e => e != null && e.Health > 0))
+                         .Concat(opp.Field.Where(e => e != null && e.Health > 0))
+                         .Concat(opp.MemberZone.Where(e => e != null && e.Health > 0)).ToList();
+            list.Add(me.Leader);
+            list.Add(opp.Leader);
+            return list!;
+        }
+    }
+}
+</file>
+
+<file path="RandomTargetSelectors.cs">
+namespace GameServer.Effects.TargetSelector
+{
+    // 3-1. 무작위 적 하수인 (적 필드 중 택 1)
+    public class RandomEnemyMinionSelector : ITargetSelector
+    {
+        public IEnumerable<GameEntity> GetTargets(GameState state, EffectContext context)
+        {
+            var opp = state.GetPlayerState(context.OwnerUid, true);
+            var pool = opp.Field.Where(e => e != null && e.Health > 0)
+                          .Concat(opp.MemberZone.Where(e => e != null && e.Health > 0)).ToList();
+
+            if (pool.Count > 0) yield return pool[state.Rng.Next(pool.Count)]!;
+        }
+    }
+
+    // 3-2. 무작위 아군 하수인 (아군 필드 중 택 1)
+    public class RandomFriendlyMinionSelector : ITargetSelector
+    {
+        public IEnumerable<GameEntity> GetTargets(GameState state, EffectContext context)
+        {
+            var me = state.GetPlayerState(context.OwnerUid);
+            var pool = me.Field.Where(e => e != null && e.Health > 0)
+                         .Concat(me.MemberZone.Where(e => e != null && e.Health > 0)).ToList();
+
+            if (pool.Count > 0) yield return pool[state.Rng.Next(pool.Count)]!;
+        }
+    }
+
+    // 3-3. 무작위 캐릭터 (양쪽 명치 + 모든 하수인 중 택 1)
+    public class RandomCharacterSelector : ITargetSelector
+    {
+        public IEnumerable<GameEntity> GetTargets(GameState state, EffectContext context)
+        {
+            var selector = new AllCharactersSelector(); // 위에서 만든 광역 셀렉터 재활용
+            var pool = selector.GetTargets(state, context).ToList();
+
+            if (pool.Count > 0) yield return pool[state.Rng.Next(pool.Count)];
+        }
+    }
+
+    // 무작위 적 캐릭터 1명 (적 영웅 + 적 하수인 중 택 1)
+    public class RandomEnemyCharacterSelector : ITargetSelector
+    {
+        public IEnumerable<GameEntity> GetTargets(GameState state, EffectContext context)
+        {
+            // 1. 상대방(Opponent) 상태 가져오기
+            var opp = state.GetPlayerState(context.OwnerUid, true);
+
+            // 2. 살아있는 적 하수인들 모두 모으기
+            var pool = opp.Field.Where(e => e != null && e.Health > 0)
+                          .Concat(opp.MemberZone.Where(e => e != null && e.Health > 0))
+                          .ToList();
+            
+            // 3. 적 영웅(명치)도 공격 후보에 추가
+            pool.Add(opp.Leader); 
+
+            // 4. 모인 후보들 중 무작위로 1명만 추첨해서 반환
+            if (pool.Count > 0)
+            {
+                yield return pool[state.Rng.Next(pool.Count)]!;
+            }
+        }
+    }
+}
+</file>
+
+<file path="SingleTargetSelectors.cs">
+namespace GameServer.Effects.TargetSelector
+{
+    /// // 자기 자신 (효과를 발동한 주체)
+    public class SelfSelector : ITargetSelector
+    {
+        public IEnumerable<GameEntity> GetTargets(GameState state, EffectContext context)
+        {
+            // 효과를 발생시킨 원본 개체가 존재하고 살아있을 때만 타겟으로 반환
+            if (context.SourceEntity != null && context.SourceEntity.Health > 0)
+            {
+                yield return context.SourceEntity;
+            }
+        }
+    }
+
+    // 1-1. 단일 대상 (공용 - 아무나 클릭한 대상 그대로 적용)
+    public class ContextTargetSelector : ITargetSelector
+    {
+        public IEnumerable<GameEntity> GetTargets(GameState state, EffectContext context)
+        {
+            if (context.TargetEntity != null && context.TargetEntity.Health > 0) 
+                yield return context.TargetEntity;
+        }
+    }
+
+    /// <summary>
+    /// 유저가 지정한 단일 대상 중, 리더(영웅)를 제외한 '하수인'만 타겟으로 인정합니다.
+    /// </summary>
+    public class ContextMinionTargetSelector : ITargetSelector
+    {
+        public IEnumerable<GameEntity> GetTargets(GameState state, EffectContext context)
+        {
+            // 1. 타겟이 존재하고 살아있는지 확인
+            // 2. 타겟이 리더(명치)가 아닌지 확인 (!IsLeader)
+            if (context.TargetEntity != null && 
+                context.TargetEntity.Health > 0 && 
+                !context.TargetEntity.IsLeader && 
+                !context.TargetEntity.IsMember) 
+            {
+                yield return context.TargetEntity;
+            }
+        }
+    }
+
+    // 1-2. 단일 적 하수인 (클릭한 대상이 적이고 하수인(영웅 아님)일 때만 적용)
+    public class ContextEnemyMinionSelector : ITargetSelector
+    {
+        public IEnumerable<GameEntity> GetTargets(GameState state, EffectContext context)
+        {
+            var target = context.TargetEntity;
+            if (target != null && target.Health > 0 && target.OwnerUid != context.OwnerUid && !target.IsLeader)
+                yield return target;
+        }
+    }
+
+    // 1-3. 단일 아군 하수인 (클릭한 대상이 내 것이고 하수인일 때만 적용)
+    public class ContextFriendlyMinionSelector : ITargetSelector
+    {
+        public IEnumerable<GameEntity> GetTargets(GameState state, EffectContext context)
+        {
+            var target = context.TargetEntity;
+            if (target != null && target.Health > 0 && target.OwnerUid == context.OwnerUid && !target.IsLeader)
+                yield return target;
+        }
+    }
+    
+    // 1-4. 단일 적 캐릭터 (명치 포함, 내 것이 아니기만 하면 됨)
+    public class ContextEnemyCharacterSelector : ITargetSelector
+    {
+        public IEnumerable<GameEntity> GetTargets(GameState state, EffectContext context)
+        {
+            var target = context.TargetEntity;
+            if (target != null && target.Health > 0 && target.OwnerUid != context.OwnerUid)
+                yield return target;
+        }
+    }
+        
+    // 1-4. 단일 아군 캐릭터 (명치 포함, 내 것이 아니기만 하면 됨)
+    public class ContextFriendlyCharacterSelector : ITargetSelector
+    {
+        public IEnumerable<GameEntity> GetTargets(GameState state, EffectContext context)
+        {
+            var target = context.TargetEntity;
+            // 내 소유(아군)이기만 하면 리더든 하수인이든 전부 통과!
+            if (target != null && target.Health > 0 && target.OwnerUid == context.OwnerUid)
+                yield return target;
+        }
+    }
+
+    /// <summary>
+    /// 마우스로 지정한 대상 중, 오직 '멤버(Member)'만 타겟으로 인정합니다. (아군/적군 무관)
+    /// </summary>
+    public class ContextMemberTargetSelector : ITargetSelector
+    {
+        public IEnumerable<GameEntity> GetTargets(GameState state, EffectContext context)
+        {
+            var target = context.TargetEntity;
+            
+            // 1. 타겟이 존재하고 살아있는지 확인
+            // 2. 타겟이 '멤버(IsMember)'인지 확인
+            if (target != null && target.Health > 0 && target.IsMember)
+            {
+                yield return target;
+            }
+        }
+    }
+
+    /// <summary>
+    /// 아군 멤버 존(MemberZone)에 배치된 멤버 개체를 타겟으로 지정합니다.
+    /// </summary>
+    public class FriendlyMemberSelector : ITargetSelector
+    {
+        public IEnumerable<GameEntity> GetTargets(GameState state, EffectContext context)
+        {
+            // 1. 내 UID를 기반으로 내 상태(PlayerState)를 가져옵니다.
+            PlayerState me = state.GetPlayerState(context.OwnerUid);
+            
+            // 2. 내 MemberZone에서 빈자리가 아니고(null이 아님), 살아있는 개체만 가져옵니다.
+            return me.MemberZone.Where(e => e != null && e.Health > 0).ToList()!;
+        }
+    }
+
+    /// <summary>
+    /// 상대방 멤버 존(MemberZone)에 배치된 멤버 개체를 타겟으로 지정합니다.
+    /// </summary>
+    public class EnemyMemberSelector : ITargetSelector
+    {
+        public IEnumerable<GameEntity> GetTargets(GameState state, EffectContext context)
+        {
+            // 1. 상대방의 상태(PlayerState)를 가져옵니다. (opp = true)
+            PlayerState opp = state.GetPlayerState(context.OwnerUid, true);
+            
+            // 2. 상대방의 MemberZone에서 빈자리가 아니고, 살아있는 개체만 가져옵니다.
+            return opp.MemberZone.Where(e => e != null && e.Health > 0).ToList()!;
+        }
+    }
+
+    /// <summary>
+    /// 효과를 시전한 플레이어(나)의 영웅(리더)을 타겟으로 지정합니다.
+    /// </summary>
+    public class FriendlyLeaderSelector : ITargetSelector
+    {
+        public IEnumerable<GameEntity> GetTargets(GameState state, EffectContext context)
+        {
+            // 1. 내 UID를 기반으로 내 상태(PlayerState)를 가져옵니다.
+            PlayerState me = state.GetPlayerState(context.OwnerUid);
+            
+            // 2. 내 리더 객체를 리스트에 담아 반환합니다.
+            return new List<GameEntity> { me.Leader };
+        }
+    }
+
+    /// <summary>
+    /// 상대방 플레이어의 영웅(리더)을 타겟으로 지정합니다.
+    /// </summary>
+    public class EnemyLeaderSelector : ITargetSelector
+    {
+        public IEnumerable<GameEntity> GetTargets(GameState state, EffectContext context)
+        {
+            // 1. GetPlayerState의 두 번째 파라미터(opp)를 true로 주어 '상대방'의 상태를 가져옵니다.
+            PlayerState opp = state.GetPlayerState(context.OwnerUid, true);
+            
+            // 2. 상대방의 리더 객체를 리스트에 담아 반환합니다.
+            return new List<GameEntity> { opp.Leader };
+        }
+    }
+
+}
+</file>
+
+</files>

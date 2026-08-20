@@ -23,6 +23,7 @@ namespace GameServer
         // (수정) private _gameId -> public GameId 속성
         public string GameId { get; private set; }
         private readonly FirestoreDb _db;
+        public FirestoreDb Db => _db;
         
         // (중요) 이 방의 '게임 두뇌'
         private GameState? _gameState; 

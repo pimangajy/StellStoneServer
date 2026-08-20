@@ -50,8 +50,6 @@ namespace GameServer
             var me = _gameState.GetPlayerState(_botUid);
             var opponent = _gameState.GetPlayerState(_botUid, true);
 
-            Console.WriteLine("봇의 턴 시작");
-
             // 1. 턴 시작 후 생각하는 시간 연출
             await Task.Delay(2000);
 

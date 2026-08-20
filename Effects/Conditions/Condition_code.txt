@@ -1,0 +1,539 @@
+This file is a merged representation of a subset of the codebase, containing specifically included files, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of a subset of the repository's contents that is considered the most important context.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Only files matching these patterns are included: **/*.cs
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+TargetAttackLessCondition.cs
+TargetAttackMoreCondition.cs
+TargetCardIdCondition.cs
+TargetCardTypeCondition.cs
+TargetClassCondition.cs
+TargetCostLessCondition.cs
+TargetCostMoreCondition.cs
+TargetHasKeywordCondition.cs
+TargetHealthLessCondition.cs
+TargetHealthMoreCondition.cs
+TargetIsEnemyCondition.cs
+TargetIsFriendlyCondition.cs
+TargetIsLeaderCondition.cs
+TargetIsMemberCondition.cs
+TargetIsMemberOrLeaderCondition.cs
+TargetIsMinionCondition.cs
+TargetIsMinionOrLeaderCondition.cs
+TargetIsMinionOrMemberCondition.cs
+TargetIsNotSelfCondition.cs
+TargetIsSelfCondition.cs
+TargetRarityCondition.cs
+TargetTribeCondition.cs
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="TargetAttackLessCondition.cs">
+namespace GameServer.Effects.Conditions
+{
+    /// <summary>
+    /// 대상의 공격력이 특정 수치 미만(<)인지 확인하는 조건입니다.
+    /// </summary>
+    public class TargetAttackLessCondition : ICondition
+    {
+        public int Threshold { get; set; }
+        public TargetAttackLessCondition(int threshold) { Threshold = threshold; }
+        
+        public bool Check(GameState state, EffectContext context)
+        {
+            if (context.TargetEntity == null) return false;
+            return context.TargetEntity.Attack <= Threshold;
+        }
+    }
+}
+</file>
+
+<file path="TargetAttackMoreCondition.cs">
+namespace GameServer.Effects.Conditions
+{
+    /// <summary>
+    /// 대상의 공격력이 특정 수치 이상(>=)인지 확인하는 조건입니다.
+    /// </summary>
+    public class TargetAttackMoreCondition : ICondition
+    {
+        public int Threshold { get; set; }
+
+        public TargetAttackMoreCondition(int threshold)
+        {
+            Threshold = threshold;
+        }
+
+        public bool Check(GameState state, EffectContext context)
+        {
+            if (context.TargetEntity == null) return false;
+            return context.TargetEntity.Attack >= Threshold;
+        }
+    }
+}
+</file>
+
+<file path="TargetCardIdCondition.cs">
+namespace GameServer.Effects.Conditions
+{
+    /// <summary>
+    /// 대상 카드의 고유 ID가 특정 카드의 ID(예: 'cards-gangzi-008')와 일치하는지 확인하는 조건입니다.
+    /// </summary>
+    public class TargetCardIdCondition : ICondition
+    {
+        public string TargetCardId { get; set; }
+
+        public TargetCardIdCondition(string targetCardId)
+        {
+            TargetCardId = targetCardId;
+        }
+
+        public bool Check(GameState state, EffectContext context)
+        {
+            if (context.TargetEntity == null || context.TargetEntity.SourceCard == null) return false;
+            return context.TargetEntity.SourceCard.CardId == TargetCardId;
+        }
+    }
+}
+</file>
+
+<file path="TargetCardTypeCondition.cs">
+namespace GameServer.Effects.Conditions
+{
+    /// <summary>
+    /// 대상이 특정 카드 타입(예: 하수인, 멤버)인지 확인하는 조건입니다.
+    /// </summary>
+    public class TargetCardTypeCondition : ICondition
+    {
+        public CardType RequiredType { get; set; }
+
+        public TargetCardTypeCondition(CardType requiredType)
+        {
+            RequiredType = requiredType;
+        }
+
+        public bool Check(GameState state, EffectContext context)
+        {
+            if (context.TargetEntity == null || context.TargetEntity.SourceCard == null) return false;
+            return context.TargetEntity.SourceCard.Type == RequiredType;
+        }
+    }
+}
+</file>
+
+<file path="TargetClassCondition.cs">
+namespace GameServer.Effects.Conditions
+{
+    /// <summary>
+    /// 대상의 직업군(Class)이 특정 직업과 일치하는지 확인하는 조건입니다.
+    /// </summary>
+    public class TargetClassCondition : ICondition
+    {
+        public CardClass RequiredClass { get; set; }
+
+        public TargetClassCondition(CardClass requiredClass)
+        {
+            RequiredClass = requiredClass;
+        }
+
+        public bool Check(GameState state, EffectContext context)
+        {
+            if (context.TargetEntity == null || context.TargetEntity.SourceCard == null) return false;
+            return context.TargetEntity.SourceCard.Class == RequiredClass;
+        }
+    }
+}
+</file>
+
+<file path="TargetCostLessCondition.cs">
+namespace GameServer.Effects.Conditions
+{
+    /// <summary>
+    /// 대상 카드의 현재 비용(Cost)이 특정 수치 미만(<)인지 확인하는 조건입니다.
+    /// </summary>
+    public class TargetCostLessCondition : ICondition
+    {
+        public int Threshold { get; set; }
+
+        public TargetCostLessCondition(int threshold)
+        {
+            Threshold = threshold;
+        }
+
+        public bool Check(GameState state, EffectContext context)
+        {
+            if (context.TargetEntity == null || context.TargetEntity.SourceCard == null) return false;
+            return context.TargetEntity.SourceCard.CurrentCost < Threshold;
+        }
+    }
+}
+</file>
+
+<file path="TargetCostMoreCondition.cs">
+namespace GameServer.Effects.Conditions
+{
+    /// <summary>
+    /// 대상 카드의 현재 비용(Cost)이 특정 수치 이상(>=)인지 확인하는 조건입니다.
+    /// </summary>
+    public class TargetCostMoreCondition : ICondition
+    {
+        public int Threshold { get; set; }
+
+        public TargetCostMoreCondition(int threshold)
+        {
+            Threshold = threshold;
+        }
+
+        public bool Check(GameState state, EffectContext context)
+        {
+            if (context.TargetEntity == null || context.TargetEntity.SourceCard == null) return false;
+            return context.TargetEntity.SourceCard.CurrentCost >= Threshold;
+        }
+    }
+}
+</file>
+
+<file path="TargetHasKeywordCondition.cs">
+namespace GameServer.Effects.Conditions
+{
+    /// <summary>
+    /// 대상이 특정 키워드(도발, 속공 등)를 가지고 있는지 확인하는 조건입니다. (기존 HAS_KEYWORD 대체)
+    /// </summary>
+    public class TargetHasKeywordCondition : ICondition
+    {
+        public CardKeywords RequiredKeyword { get; set; }
+
+        public TargetHasKeywordCondition(CardKeywords keyword)
+        {
+            RequiredKeyword = keyword;
+        }
+
+        public bool Check(GameState state, EffectContext context)
+        {
+            if (context.TargetEntity == null || context.TargetEntity.Keywords == null) return false;
+            return context.TargetEntity.Keywords.Contains(RequiredKeyword);
+        }
+    }
+}
+</file>
+
+<file path="TargetHealthLessCondition.cs">
+namespace GameServer.Effects.Conditions
+{
+    /// <summary>
+    /// 대상의 체력이 특정 수치 미만인지 확인하는 조건입니다. (기존 HEALTH_LESS 대체)
+    /// </summary>
+    public class TargetHealthLessCondition : ICondition
+    {
+        public int Threshold { get; set; }
+
+        public TargetHealthLessCondition(int threshold)
+        {
+            Threshold = threshold;
+        }
+
+        public bool Check(GameState state, EffectContext context)
+        {
+            if (context.TargetEntity == null) return false;
+            return context.TargetEntity.Health < Threshold;
+        }
+    }
+}
+</file>
+
+<file path="TargetHealthMoreCondition.cs">
+namespace GameServer.Effects.Conditions
+{
+    /// <summary>
+    /// 대상의 체력이 특정 수치 이상(>=)인지 확인하는 조건입니다.
+    /// </summary>
+    public class TargetHealthMoreCondition : ICondition
+    {
+        public int Threshold { get; set; }
+
+        public TargetHealthMoreCondition(int threshold)
+        {
+            Threshold = threshold;
+        }
+
+        public bool Check(GameState state, EffectContext context)
+        {
+            if (context.TargetEntity == null) return false;
+            return context.TargetEntity.Health >= Threshold;
+        }
+    }
+}
+</file>
+
+<file path="TargetIsEnemyCondition.cs">
+namespace GameServer.Effects.Conditions
+{
+    /// <summary>
+    /// 사건을 당한 대상이 적군 진영인지 검사합니다.
+    /// </summary>
+    public class TargetIsEnemyCondition : ICondition
+    {
+        public bool Check(GameState state, EffectContext context)
+        {
+            return context.SourceEntity != null && context.SourceEntity.OwnerUid != context.OwnerUid;
+        }
+    }
+}
+</file>
+
+<file path="TargetIsFriendlyCondition.cs">
+namespace GameServer.Effects.Conditions
+{
+    /// <summary>
+    /// 사건을 당한 대상(피해를 입은 대상 등)이 아군 진영인지 검사합니다.
+    /// </summary>
+    public class TargetIsFriendlyCondition : ICondition
+    {
+        public bool Check(GameState state, EffectContext context)
+        {
+            return context.SourceEntity != null && context.SourceEntity.OwnerUid == context.OwnerUid;
+        }
+    }
+}
+</file>
+
+<file path="TargetIsLeaderCondition.cs">
+namespace GameServer.Effects.Conditions
+{
+    /// <summary>
+    /// 사건을 당한 대상이 리더(영웅)인지 검사합니다.
+    /// </summary>
+    public class TargetIsLeaderCondition : ICondition
+    {
+        public bool Check(GameState state, EffectContext context)
+        {
+            return context.SourceEntity != null && context.SourceEntity.IsLeader;
+        }
+    }
+}
+</file>
+
+<file path="TargetIsMemberCondition.cs">
+namespace GameServer.Effects.Conditions
+{
+    /// <summary>
+    /// 사건을 당한 대상이 멤버 존(MemberZone)에 배치된 멤버인지 검사합니다.
+    /// </summary>
+    public class TargetIsMemberCondition : ICondition
+    {
+        public bool Check(GameState state, EffectContext context)
+        {
+            return context.SourceEntity != null && context.SourceEntity.IsMember;
+        }
+    }
+}
+</file>
+
+<file path="TargetIsMemberOrLeaderCondition.cs">
+namespace GameServer.Effects.Conditions
+{
+    /// <summary>
+    /// 효과 대상이 멤버(Member)이거나 리더(Leader)인지 검사합니다. (멤버, 리더를 포함)
+    /// </summary>
+    public class TargetIsMemberOrLeaderCondition : ICondition
+    {
+        public bool Check(GameState state, EffectContext context)
+        {
+            if (context.SourceEntity == null) return false;
+
+            bool isMember = context.SourceEntity.IsMember;
+            bool isLeader = context.SourceEntity.IsLeader;
+
+            return isMember || isLeader;
+        }
+    }
+}
+</file>
+
+<file path="TargetIsMinionCondition.cs">
+namespace GameServer.Effects.Conditions
+{
+    /// <summary>
+    /// 피해를 입은 개체가 영웅(Leader)이 아닌 일반 하수인(Minion)인지 검사합니다.
+    /// </summary>
+    public class TargetIsMinionCondition : ICondition
+    {
+        public bool Check(GameState state, EffectContext context)
+        {
+            // IsLeader가 false이고 IsMember가 false인 일반 하수인인지 판별
+            return context.SourceEntity != null && !context.SourceEntity.IsLeader && !context.SourceEntity.IsMember;
+        }
+    }
+}
+</file>
+
+<file path="TargetIsMinionOrLeaderCondition.cs">
+namespace GameServer.Effects.Conditions
+{
+    /// <summary>
+    /// 효과 대상이 일반 하수인(Minion)이거나 리더(Leader)인지 검사합니다. (하수인, 리더를 포함)
+    /// </summary>
+    public class TargetIsMinionOrLeaderCondition : ICondition
+    {
+        public bool Check(GameState state, EffectContext context)
+        {
+            if (context.SourceEntity == null) return false;
+
+            // 일반 하수인 판별 (!IsLeader && !IsMember)
+            bool isMinion = !context.SourceEntity.IsLeader && !context.SourceEntity.IsMember;
+            bool isLeader = context.SourceEntity.IsLeader;
+
+            return isMinion || isLeader; // 논리적으로 !context.SourceEntity.IsMember 와 동일합니다.
+        }
+    }
+}
+</file>
+
+<file path="TargetIsMinionOrMemberCondition.cs">
+namespace GameServer.Effects.Conditions
+{
+    /// <summary>
+    /// 효과 대상이 일반 하수인(Minion)이거나 멤버(Member)인지 검사합니다. (하수인, 멤버를 포함)
+    /// </summary>
+    public class TargetIsMinionOrMemberCondition : ICondition
+    {
+        public bool Check(GameState state, EffectContext context)
+        {
+            if (context.SourceEntity == null) return false;
+
+            // 일반 하수인 판별 (!IsLeader && !IsMember)
+            bool isMinion = !context.SourceEntity.IsLeader && !context.SourceEntity.IsMember;
+            bool isMember = context.SourceEntity.IsMember;
+
+            return isMinion || isMember; // 논리적으로 !context.SourceEntity.IsLeader 와 동일합니다.
+        }
+    }
+}
+</file>
+
+<file path="TargetIsNotSelfCondition.cs">
+namespace GameServer.Effects.Conditions
+{
+    /// <summary>
+    /// 피해를 입은 개체가 효과를 소유한 카드 본인이 아닌 다른 개체인지 검사합니다.
+    /// </summary>
+    public class TargetIsNotSelfCondition : ICondition
+    {
+        public bool Check(GameState state, EffectContext context)
+        {
+            // context.SourceEntity: 이번에 피해를 입은 당사자 개체
+            // context.SourceCard: 이 효과를 작동시키고 있는 하수인 카드 본인
+            return context.SourceEntity != null && context.SourceEntity.SourceCard != context.SourceCard;
+        }
+    }
+}
+</file>
+
+<file path="TargetIsSelfCondition.cs">
+namespace GameServer.Effects.Conditions
+{
+    /// <summary>
+    /// 피해를 받거나 사건이 일어난 주체 개체가 효과 소유자 본인인지 검사합니다.
+    /// </summary>
+    public class TargetIsSelfCondition : ICondition
+    {
+        public bool Check(GameState state, EffectContext context)
+        {
+            // 이번 이벤트의 대상 엔티티가 효과 원본 카드와 일치하는지 확인
+            return context.SourceEntity?.SourceCard == context.SourceCard;
+        }
+    }
+}
+</file>
+
+<file path="TargetRarityCondition.cs">
+namespace GameServer.Effects.Conditions
+{
+    /// <summary>
+    /// 대상 카드의 레어도(Rarity)가 특정 레어도와 일치하는지 확인하는 조건입니다.
+    /// </summary>
+    public class TargetCardRarityCondition : ICondition
+    {
+        public CardRarity RequiredRarity { get; set; }
+
+        public TargetCardRarityCondition(CardRarity requiredRarity)
+        {
+            RequiredRarity = requiredRarity;
+        }
+
+        public bool Check(GameState state, EffectContext context)
+        {
+            // 대상 개체와 원본 카드 정보가 있는지 확인
+            if (context.TargetEntity == null || context.TargetEntity.SourceCard == null) return false;
+            
+            // 대상 카드의 레어도와 요구하는 레어도가 같은지 비교
+            return context.TargetEntity.SourceCard.Rarity == RequiredRarity;
+        }
+    }
+}
+</file>
+
+<file path="TargetTribeCondition.cs">
+namespace GameServer.Effects.Conditions
+{
+    /// <summary>
+    /// 대상의 종족이 특정 종족(강도단, 아르냥 등)인지 확인하는 조건입니다.
+    /// </summary>
+    public class TargetTribeCondition : ICondition
+    {
+        public CardTribe Tribe { get; set; }
+
+        public TargetTribeCondition(CardTribe tribe)
+        {
+            Tribe = tribe;
+        }
+
+        public bool Check(GameState state, EffectContext context)
+        {
+            if (context.TargetEntity == null) return false;
+            return context.TargetEntity.Tribe == Tribe;
+        }
+    }
+}
+</file>
+
+</files>

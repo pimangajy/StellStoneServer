@@ -1,0 +1,3 @@
+cd /d E:\Server\MyGameServer\MyGameServer
+
+npx repomix --include "**/*.cs"

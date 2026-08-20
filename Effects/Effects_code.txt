@@ -1,0 +1,262 @@
+This file is a merged representation of a subset of the codebase, containing specifically included files, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of a subset of the repository's contents that is considered the most important context.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Only files matching these patterns are included: *.cs
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+CardEffectSystem.cs
+EventSystem.cs
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="CardEffectSystem.cs">
+using System.Collections.Generic;
+using System.Threading.Tasks;
+
+namespace GameServer.Effects
+{
+    /// <summary>
+    /// 카드가 효과를 발동할 수 있는 위치를 나타냅니다.
+    /// </summary>
+    public enum Zone
+    {
+        None = 0,
+        Deck,       // 덱에 있을 때
+        Hand,       // 손패에 있을 때
+        Field,      // 필드에 소환되었을 때
+        Graveyard,  // 무덤에 있을 때
+        MemberZone  // 멤버 존에 있을 때
+    }
+
+    /// <summary>
+    /// 효과 발동의 조건을 검사하는 인터페이스입니다.
+    /// </summary>
+    public interface ICondition
+    {
+        bool Check(GameState state, EffectContext context);
+    }
+
+    /// <summary>
+    /// 실제 효과(데미지, 드로우, 버프 등)를 실행하는 인터페이스입니다.
+    /// 기존 GameState 로직들이 비동기로 동작하므로 Task를 반환하도록 합니다.
+    /// </summary>
+    public interface IAction
+    {
+        Task ExecuteAsync(GameState state, EffectContext context);
+    }
+
+    /// <summary>
+    /// 효과가 적용될 대상을 찾아내는 인터페이스입니다.
+    /// </summary>
+    public interface ITargetSelector
+    {
+        // 상황(Context)을 보고 타겟들의 리스트를 반환합니다.
+        IEnumerable<GameEntity> GetTargets(GameState state, EffectContext context);
+    }
+}
+
+namespace GameServer.Effects
+{
+    /// <summary>
+    /// 효과가 발동할 당시의 모든 상황 정보(Context)를 담는 클래스입니다.
+    /// </summary>
+    public class EffectContext
+    {
+        // 1. 효과를 발생시킨 주체 정보
+        public string OwnerUid { get; set; }           // 소유자 UID
+        public GameCard? SourceCard { get; set; }       // 효과를 가진 원본 카드
+        public GameEntity? SourceEntity { get; set; }  // (선택) 필드에 있는 경우 주체 개체
+
+        // 2. 효과의 대상 (타겟팅 효과일 경우)
+        public GameEntity? TargetEntity { get; set; }  // (선택) 지정된 대상 개체
+        public int TargetPosition { get; set; } = -1;  // (선택) 지정된 필드 위치
+
+        // 3. 이벤트 정보
+        public EffectTriggerType Trigger { get; set; } // 이 효과를 유발한 트리거
+        public object? EventData { get; set; }         // (선택) 이벤트 관련 부가 데이터 (예: 입은 피해량)
+
+        public EffectContext(string ownerUid, GameCard? sourceCard, EffectTriggerType trigger)
+        {
+            OwnerUid = ownerUid;
+            SourceCard = sourceCard;
+            Trigger = trigger;
+        }
+    }
+}
+
+namespace GameServer.Effects
+{
+    /// <summary>
+    /// 새로운 시스템의 카드 효과 컨테이너 클래스입니다.
+    /// 향후 JSON 다형성을 활용해 Firestore에서 이 구조로 데이터를 바로 파싱하게 됩니다.
+    /// </summary>
+    public class CardEffect
+    {
+        /// <summary>
+        /// 이 효과가 어느 위치(Zone)에 있을 때 활성화되는가?
+        /// </summary>
+        public Zone ActiveZone { get; set; } = Zone.Field;
+
+        /// <summary>
+        /// 이 효과를 발동시키는 이벤트는 무엇인가?
+        /// </summary>
+        public EffectTriggerType Trigger { get; set; }
+
+        /// <summary>
+        /// 효과가 발동하기 위해 모두 만족해야 하는 조건들 (AND 조건)
+        /// </summary>
+        public List<ICondition> Conditions { get; set; } = new List<ICondition>();
+
+        /// <summary>
+        /// 조건이 맞았을 때 순차적으로 실행될 행동들
+        /// </summary>
+        public List<IAction> Actions { get; set; } = new List<IAction>();
+
+        /// <summary>
+        /// 행동 반복 횟수 (예: 무작위 적에게 1데미지를 '3'번 줍니다)
+        /// </summary>
+        public int RepeatCount { get; set; } = 1;
+    }
+}
+</file>
+
+<file path="EventSystem.cs">
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
+
+namespace GameServer.Effects
+{
+    public class EventSystem
+    {
+        private readonly GameState _gameState;
+
+        // [수정됨] 효과(CardEffect)와 그 효과를 가진 원본 카드(GameCard)를 함께 튜플로 묶어서 저장합니다!
+        private readonly Dictionary<EffectTriggerType, List<(CardEffect effect, GameCard sourceCard)>> _subscribers = new();
+
+        public EventSystem(GameState gameState)
+        {
+            _gameState = gameState;
+        }
+
+        // [수정됨] 매개변수에 GameCard 추가
+        public void Subscribe(CardEffect effect, GameCard sourceCard) 
+        {
+            if (!_subscribers.ContainsKey(effect.Trigger))
+                _subscribers[effect.Trigger] = new List<(CardEffect, GameCard)>();
+
+            if (!_subscribers[effect.Trigger].Any(x => x.effect == effect))
+                _subscribers[effect.Trigger].Add((effect, sourceCard));
+        }
+
+        public void Unsubscribe(CardEffect effect)
+        {
+            if (_subscribers.ContainsKey(effect.Trigger))
+            {
+                // 이 효과와 일치하는 등록 정보 삭제
+                _subscribers[effect.Trigger].RemoveAll(x => x.effect == effect);
+            }
+        }
+
+        public async Task PublishAsync(EffectTriggerType trigger, EffectContext eventContext)
+        {
+            if(trigger == EffectTriggerType.ON_DAMAGE) Console.WriteLine("ON_DAMAGE 발생");
+
+            if (!_subscribers.ContainsKey(trigger)) return;
+
+            var effectsToRun = _subscribers[trigger].ToList();
+
+            foreach (var tuple in effectsToRun)
+            {
+                var effect = tuple.effect;
+                var ownerCard = tuple.sourceCard; // 이 효과를 등록한 카드
+
+                // -----------------------------------------------------------------
+                // [신규 추가] 로컬 트리거(ON_PLAY, ON_DEATH) 주체 검증
+                // -----------------------------------------------------------------
+                if (trigger == EffectTriggerType.ON_PLAY || trigger == EffectTriggerType.ON_DEATH)
+                {
+                    // 이벤트를 발생시킨 원본 카드(eventContext.SourceCard)가 
+                    // 이 효과를 소유한 카드(ownerCard)와 다르면, 남의 카드이므로 실행을 건너뜁니다.
+                    if (ownerCard.InstanceId != eventContext.SourceCard?.InstanceId)
+                    {
+                        // 로그를 좀 더 명확하게 고쳐 어떤 카드가 무시되었는지 파악하기 쉽게 만듭니다.
+                        Console.WriteLine($"[PublishAsync] {ownerCard.CardName}은 사용자가 아니므로 스킵 ({ownerCard.InstanceId} != {eventContext.SourceCard?.InstanceId})");
+                        continue; 
+                    }
+                }
+                // -----------------------------------------------------------------
+
+                // [핵심] 방송을 듣고 발동하는 카드의 '주인 시점'으로 컨텍스트를 스마트하게 재구성!
+                var actionContext = new EffectContext(ownerCard.OwnerUid, ownerCard, trigger)
+                {
+                    TargetEntity = eventContext.TargetEntity, // 방금 소환된 하수인 정보 유지
+                    SourceEntity = eventContext.SourceEntity,
+                    EventData = eventContext.EventData
+                };
+
+                bool allConditionsMet = true;
+                foreach (var condition in effect.Conditions)
+                {
+                    if (!condition.Check(_gameState, actionContext))
+                    {
+                        allConditionsMet = false;
+                        break;
+                    }
+                }
+
+                if (allConditionsMet)
+                {
+                    for (int i = 0; i < effect.RepeatCount; i++)
+                    {
+                        foreach (var action in effect.Actions)
+                            await action.ExecuteAsync(_gameState, actionContext);
+                    }
+                }
+            }
+        }
+    }
+}
+</file>
+
+</files>

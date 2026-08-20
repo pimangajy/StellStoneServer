@@ -1,5 +1,6 @@
 using Google.Cloud.Firestore;
 using System.Collections.Generic;
+using Newtonsoft.Json;
 
 namespace GameServer
 {
@@ -46,8 +47,8 @@ namespace GameServer
         [FirestoreProperty("Effects")]
         public string? EffectsString { get; set; }
 
-        [FirestoreProperty("TargetRule", ConverterType = typeof(FirestoreEnumNameConverter<TargetRule>))] 
-        public TargetRule? CardTargetRule { get; set; }
+        [FirestoreProperty("Targeting")] 
+        public bool? Targeting { get; set; }
 
         // (추가) 희귀도
         [FirestoreProperty("Rarity", ConverterType = typeof(FirestoreEnumNameConverter<CardRarity>))] 
@@ -61,119 +62,71 @@ namespace GameServer
         [FirestoreProperty("Additional")] 
         public string? Additional { get; set; }
 
-        // 키워드 (CSV에 없다면 기본값 처리)
-        public List<CardKeywords> Keywords { get; set; } = new List<CardKeywords>();
-
         public int AttackValue => Attack ?? 0;
         public int HealthValue => Health ?? 0;
-        
-        public List<ServerEffectData> GetParsedEffects()
+
+        [FirestoreProperty("Keywords")]
+        public string? KeywordsString { get; set; }
+
+        private List<CardKeywords>? _cachedKeywords = null;
+
+        public List<CardKeywords> Keywords
         {
-            var list = new List<ServerEffectData>();
-            if (string.IsNullOrEmpty(EffectsString)) return list; // [1]
-
-            try 
+            get
             {
-                // 1. '&' 기호를 기준으로 여러 개의 효과를 분리
-                var effectStrings = EffectsString.Split('&', StringSplitOptions.RemoveEmptyEntries); 
-
-                foreach (var singleEffectStr in effectStrings)
+                // 1. 만약 이미 계산해둔 리스트가 있다면, 매번 연산하지 않고 그걸 그대로 반환!
+                if (_cachedKeywords != null)
                 {
-                    var cleanStr = singleEffectStr.Trim(); 
-                    var effect = new ServerEffectData();
-                    string detailStr = "";
+                    return _cachedKeywords;
+                }
 
-                    // 2. '|' 기호가 포함되어 있는지 확인하여 트리거 유무 판단
-                    if (cleanStr.Contains('|'))
+                // 2. 아직 한 번도 계산을 안 했다면, 여기서 딱 한 번만 문자열을 분리해서 리스트로 만듭니다.
+                _cachedKeywords = new List<CardKeywords>();
+                
+                if (!string.IsNullOrEmpty(KeywordsString))
+                {
+                    string[] splits = KeywordsString.Split(',');
+                    foreach (var s in splits)
                     {
-                        // 트리거가 명시된 경우 (예: "ON_DEATH|DAMAGE:1:0:ALL_ENEMIES")
-                        var parts = cleanStr.Split('|'); 
-                        string triggerStr = parts[0]; 
-                        detailStr = parts[1]; // '|' 뒷부분을 세부 내용으로 지정
-                        
-                        // Trigger 문자열을 EffectTriggerType Enum으로 변환
-                        if (Enum.TryParse<EffectTriggerType>(triggerStr, true, out var parsedTrigger))
+                        if (Enum.TryParse<CardKeywords>(s.Trim(), true, out var kw))
                         {
-                            effect.Trigger = parsedTrigger;
-                        }
-                        else
-                        {
-                            effect.Trigger = EffectTriggerType.NONE;
+                            _cachedKeywords.Add(kw);
                         }
                     }
-                    else
-                    {
-                        // '|' 기호가 없는 경우 (예: "DAMAGE:1:0:TARGET")
-                        // 트리거를 생략한 것이므로 질문자님 의도대로 기본값(ON_PLAY)을 강제 할당합니다.
-                        effect.Trigger = EffectTriggerType.ON_PLAY; 
-                        detailStr = cleanStr; // 문자열 전체가 세부 내용이 됨
-                    }
+                }
+                
+                return _cachedKeywords;
+            }
+        }
+        
 
-                    // 3. 세부 효과 내용(: 기준) 파싱
-                    var detailParts = detailStr.Split(':'); 
-                    string[] effectNameStr = detailParts;
-                    
-                    // EffectName 파싱 (문자열 -> GameEventType Enum)
-                    if (Enum.TryParse<GameEventType>(effectNameStr[0], true, out var parsedEffectName))
-                    {
-                        effect.EffectName = parsedEffectName;
-                    }
-                    else
-                    {
-                        effect.EffectName = GameEventType.NONE;
-                    }
-                    
-                    // 4. 수치 및 타겟 정보 파싱 (기존)
-                    if (detailParts.Length > 1 && int.TryParse(detailParts[1], out int v1)) effect.Value1 = v1;
-                    if (detailParts.Length > 2 && int.TryParse(detailParts[2], out int v2)) effect.Value2 = v2;
+        // 새로운 구조(JSON)용 데이터 파싱 함수
+        public List<GameServer.Effects.CardEffect> GetNewParsedEffects()
+        {
+            if (string.IsNullOrEmpty(EffectsString)) return new List<GameServer.Effects.CardEffect>();
 
-                    // EffectName 파싱 (문자열 -> GameEventType Enum)
-                    if (effectNameStr.Length > 3 && Enum.TryParse<TargetRule>(effectNameStr[3], true, out var parsedTargetRule))
+            try
+            {
+                // 데이터가 JSON 배열 형태('[')로 시작하는지 확인하여 신규 시스템 데이터인지 판별합니다.
+                if (EffectsString.TrimStart().StartsWith("["))
+                {
+                    // [핵심] 인터페이스(IAction, ICondition)를 다형성에 맞게 파싱하기 위한 설정
+                    var settings = new JsonSerializerSettings
                     {
-                        effect.Target = parsedTargetRule;
-                    }
-                    else
-                    {
-                        effect.Target = TargetRule.None;
-                    }
+                        TypeNameHandling = TypeNameHandling.Auto
+                    };
 
-                    // 5. 조건(Condition) 파싱 (문자열 -> CardCondition Enum)
-                    if (detailParts.Length > 4)
-                    {
-                        if (Enum.TryParse<CardCondition>(detailParts[4], true, out var parsedCondition))
-                        {
-                            effect.Condition = parsedCondition;
-                        }
-                        else
-                        {
-                            effect.Condition = CardCondition.NONE; // 오류 시 기본값 처리
-                        }
-                    }
-                    else
-                    {
-                        effect.Condition = CardCondition.NONE; // 조건이 생략된 경우
-                    }
-
-                    // 6. 조건의 값(ConditionValue)은 string 그대로 저장!
-                    effect.ConditionValue = detailParts.Length > 5 ? detailParts[5] : null;
-
-                    // 7. 반복 횟수(Count) 파싱
-                    if (detailParts.Length > 6 && int.TryParse(detailParts[6], out int count))
-                    {
-                        effect.Count = count;
-                    }
-                    else
-                    {
-                        effect.Count = 1; // 생략 시 기본값 1회
-                    }
-
-                    // 위에서 만든 effect 객체를 리스트에 추가합니다.
-                    list.Add(effect);
+                    return JsonConvert.DeserializeObject<List<GameServer.Effects.CardEffect>>(EffectsString, settings) 
+                           ?? new List<GameServer.Effects.CardEffect>();
                 }
             }
-            catch { }
-            
-            return list;
+            catch(Exception ex)
+            {
+                Console.WriteLine($"[JSON 파싱 에러] 카드ID '{CardID}': {ex.Message}");
+            }
+
+            // 구형 문자열 데이터이거나 파싱에 실패하면 빈 리스트 반환
+            return new List<GameServer.Effects.CardEffect>();
         }
     }
 }

@@ -30,6 +30,9 @@ namespace GameServer
         MULLIGAN_DECISION,   // 멀리건 결정
         END_TURN,            // 턴 종료
         PLAY_CARD,           // 카드 사용
+        SELECT_TARGET_FOR_PLAY,    // 클라이언트가 최종 선택한 타겟 전달 (또는 취소)
+        VALID_TARGETS_REQUEST,// 타겟 확인
+        VALID_ATTACK_TARGETS_REQUEST, // 공격가능한 대상 요청
         ATTACK,              // 공격 명령
         USE_MEMBER_ABILITY,  // 멤버 특수 능력 사용
         CONCEDE,             // 항복
@@ -43,11 +46,15 @@ namespace GameServer
         OPPONENT_MULLIGAN_STATUS,  // 상대방 멀리건 완료 상태
         GAME_READY,                // 게임 시작
         PHASE_START,               // 페이즈 시작 (Standby, Draw, Main, End)
+        DRAW_CARD,                 // 카드를 뽑음
         UPDATE_MANA,               // 마나 갱신
         UPDATE_ENTITIES,           // 개체(필드, 체력 등) 상태 갱신
         OPPONENT_PLAY_CARD,        // 상대방이 카드를 냄
+        REQUEST_TARGET_FOR_PLAY,   // 서버가 클라이언트에게 "타겟 찍어줘"라고 요청
         PLAY_CARD_SUCCESS,         // 카드 사용 성공
         PLAY_CARD_FAIL,            // 카드 사용 실패
+        VALID_TARGETS_RESPONSE,    // 타겟 가능한 객체 전송
+        VALID_ATTACK_TARGETS_RESPONSE,  // 공격 가능한 대상 전송
         UPDATE_HAND_CARDS,         // 손패 카드 상태(비용, 스탯 등) 갱신
         REQUEST_CHOICE,            // 서버가 클라이언트에게 선택을 요청함
         GAME_OVER,                 // 게임 종료
@@ -88,7 +95,12 @@ namespace GameServer
         public int currentCost{ get; set; }   // 현재 비용 (버프/너프 적용됨)
         public int currentAttack{ get; set; } // 현재 공격력 (하수인 전용)
         public int currentHealth{ get; set; } // 현재 체력 (하수인 전용)
-        // TODO: (고급) "enchantments" (부여된 효과 목록)를 추가할 수 있음
+        
+        // 부여된 효과(버프/너프) 목록
+        public List<EnchantmentInfo> enchantments = new List<EnchantmentInfo>();
+
+        // 이 카드가 대상으로 삼을 수 있는 현재 필드의 EntityId 목록
+        public List<int>? validTargetIds { get; set; } 
     }
 
     /// <summary>
@@ -110,6 +122,9 @@ namespace GameServer
         // List<string>으로 키워드 관리
         // (예: ["TAUNT", "POISONOUS"])
         public List<CardKeywords>? keywords = new List<CardKeywords>(); 
+
+            // 필드에 나온 개체가 받고 있는 효과 목록
+        public List<EnchantmentInfo> enchantments = new List<EnchantmentInfo>();
 
         public int position; 
         public bool isMember;
@@ -146,15 +161,22 @@ namespace GameServer
         DAMAGE,           // 데미지 발생
         HEAL,             // 체력 회복
         BUFF,             // 스탯 버프
+        BUFF_HAND,
+        BUFF_DECK,
         DEATH,            // 개체 사망
+        DESTROY,          // 즉사기(처치) 발동 연출용
         EFFECT_TRIGGER,   // 특수 효과 발동 연출 (전투의 함성, 죽음의 메아리 등)
         SUMMON ,           // 하수인 소환
+        SUMMON_FROM_DECK,  // 덱에서 특수 소환
+        SUMMON_FROM_HAND,  // 손에서 특수 소환
+        RESURRECT,          // 묘지에서 부활
         DRAW,              // 카드를 뽑음
+        SEARCH_DECK,       // 덱에서 서치
         BIND,             // 속박 (빙결 대체)
         SILENCE,          // 침묵
         FORCE_ATTACK,     // 강제 공격
         GRANT_KEYWORD,    // 키워드 부여
-        MANA_MOD          // 마나 조작
+        MANA_MOD,          // 마나 조작
     }
 
     /// <summary>
@@ -172,6 +194,17 @@ namespace GameServer
         ON_HEAL,          // 회복했을떄
         ON_DRAW,          // 드로우 했을때
         ON_SUMMON,        // 소환할때
+        ON_AURA,          // 오라
+    }
+
+    public class EnchantmentInfo
+    {
+        public int sourceEntityId;       // 이 버프를 부여한 주체의 EntityId (오라 삭제 등 추적용)
+        public GameEventType effectType; // BUFF, GRANT_KEYWORD, COST_MOD 등 어떤 종류의 효과인지
+        public int attackMod;            // 부여받은 공격력 수치
+        public int healthMod;            // 부여받은 체력 수치
+        public int costMod;              // 부여받은 비용 감소/증가 수치
+        public string? grantedKeyword;   // 부여받은 특수 키워드 (예: "Rush")
     }
 
     /// <summary>
@@ -256,6 +289,28 @@ namespace GameServer
         public int position; // 하수인을 낼 위치 (0~6)
     }
 
+    // ==========================================
+    // (C->S) (타겟 선택 완료 또는 취소)
+    // ==========================================
+    public class C_SelectTargetForPlay : BaseGameAction
+    {
+        // action = GameActionType.SELECT_TARGET_FOR_PLAY
+        public string? CardEntityId { get; set; }     // 대상을 지정한 카드의 InstanceId
+        public int selectedEntityId { get; set; }     // 선택한 대상의 EntityId (취소했다면 -1 또는 0 전송)
+    }
+
+
+    /// <summary>
+    /// (C->S) 타겟팅이 필요한 카드사용시 타겟요청
+    /// </summary>
+    public class C_ValidTargetRequest : BaseGameAction
+    {
+        // action = "VALID_TARGETS_REQUEST"
+
+        // 어떤 카드에 대한 타겟 결과인지 클라이언트가 매칭할 수 있도록 그대로 돌려줌
+        public string? CardEntityId { get; set; } 
+    }
+
     /// <summary>
     /// (C->S) 플레이어가 공격을 명령합니다.
     /// </summary>
@@ -264,6 +319,18 @@ namespace GameServer
         // action = "ATTACK"
         public int attackerEntityId; // 공격하는 내 개체(하수인/리더/멤버)의 ID
         public int defenderEntityId; // 공격받는 상대 개체(하수인/리더/멤버)의 ID
+    }
+
+    /// <summary>
+    /// (C->S) 플레이어가 특정 하수인으로 공격을 시도하려고 드래그할 때, 공격 가능한 타겟 목록을 요청합니다.
+    /// </summary>
+    public class C_ValidAttackTargetsRequest : BaseGameAction
+    {
+        public C_ValidAttackTargetsRequest()
+        {
+            action = GameActionType.VALID_ATTACK_TARGETS_REQUEST;
+        }
+        public int attackerEntityId { get; set; } // 공격을 시작하려는 내 하수인의 고유 ID
     }
 
     /// <summary>
@@ -394,6 +461,16 @@ namespace GameServer
     }
 
     /// <summary>
+    /// (S->C) 플레이어가 카드를 드로우했음을 알립니다. (페이즈 전환 없이 순수 드로우만 처리)
+    /// </summary>
+    public class S_DrawCard : BaseGameAction
+    {
+        // action = GameActionType.DRAW_CARD
+        public string? playerUid;   // 카드를 뽑은 플레이어의 UID
+        public CardInfo? drawnCard; // 뽑은 카드 정보 (상대방에게 보낼 때는 Fog of War를 위해 null 처리)
+    }
+
+    /// <summary>
     /// (S->C) (가장 중요) 게임의 개체(체력, 공격력, 위치, 죽음 등) 상태가
     /// 변경되었음을 알립니다.
     /// </summary>
@@ -413,6 +490,50 @@ namespace GameServer
         public int handNum; // 상대손에 있을때 위치
         public int targetEntityId; // 상대가 지정한 대상
         // TODO: 애니메이션 처리를 위한 추가 정보
+        
+
+        public int position;     // 하수인이 놓일 필드 슬롯 번호
+        public int entityId;     // 서버가 생성하여 부여한 고유 엔티티 ID
+    }
+
+    // ==========================================
+    //  (S->C) (타겟 지정 요청)
+    // ==========================================
+    public class S_RequestTargetForPlay : BaseGameAction
+    {
+        // action = GameActionType.REQUEST_TARGET_FOR_PLAY
+        public string? CardEntityId { get; set; }     // 대상을 요구하는 카드의 InstanceId
+        public int position { get; set; }             // 카드가 놓일 필드 위치
+        public int targetIndex { get; set; }          // (멀티 타겟 확장용) 현재가 몇 번째 타겟인가 (0, 1, 2...)
+        public List<int>? ValidTargetIds { get; set; } // TargetValidator가 계산한 현재 턴의 유효한 타겟 목록 [5]
+    }
+
+    /// <summary>
+    // (S->C) 타겟 가능한 객체들을 알려줍니다.
+    /// </summary>
+    public class S_ValidTargetResponse : BaseGameAction
+    {
+        // action = "VALID_TARGETS_RESPONSE"
+
+        // 클라이언트가 "아, 이 응답은 내가 아까 드래그한 OOO 카드의 결과구나!" 하고 
+        // 매칭할 수 있도록 CardEntityId를 같이 돌려주는 것이 안전합니다.
+        public string? CardEntityId { get; set; } 
+
+        // TargetValidator가 계산해낸 타겟 가능한 대상들의 EntityId 목록
+        public List<int>? ValidTargetIds { get; set; } 
+    }
+
+    /// <summary>
+    /// (S->C) 서버가 계산한 공격 가능한 타겟들의 EntityId 목록을 클라이언트에 회신합니다.
+    /// </summary>
+    public class S_ValidAttackTargetsResponse : BaseGameAction
+    {
+        public S_ValidAttackTargetsResponse()
+        {
+            action = GameActionType.VALID_ATTACK_TARGETS_RESPONSE;
+        }
+        public int attackerEntityId { get; set; } // 대상을 조회한 공격 하수인의 고유 ID
+        public List<int> validDefenderEntityIds { get; set; } = new List<int>(); // 공격 가능한 대상들의 EntityId 목록
     }
 
     /// <summary>

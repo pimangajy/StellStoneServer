@@ -1,4 +1,4 @@
-﻿using Google.Cloud.Firestore;
+using Google.Cloud.Firestore;
 using FirebaseAdmin;
 using FirebaseAdmin.Auth;
 using Google.Apis.Auth.OAuth2;
@@ -23,6 +23,78 @@ namespace GameServer
         public string? password { get; set; }
     }
 
+    public enum ShopCategory
+    {
+        LeaderSkin = 0, // 리더 스킨
+        Emote = 1,      // 이모티콘
+        CardBack = 2,   // 카드 뒷면
+        MapDecor = 3,   // 맵 꾸미기
+        PrismCard = 4,  // 프리즘 카드
+        Profile = 5,    // 프로필
+        SeasonPass = 6, // 시즌 패스
+        Package = 7,    // 패키지
+        CardPack = 8,   // 카드 팩
+        Cards = 9,      // 카드 낱장
+    }
+
+    public enum PriceCurrency
+    {
+        Gold = 0,        // 골드 (일반 인게임 재화)
+        Stellastone = 1, // 성석 (유료 결제 재화)
+        Stardust = 2     // 별가루 (카드 제작/분해 재화)
+    }
+
+    [FirestoreData]
+    public class ProductData
+    {
+        [FirestoreProperty]
+        public ShopCategory category_Id { get; set; }
+        [FirestoreProperty]
+        public string productId { get; set; } = "";
+        [FirestoreProperty]
+        public string productName { get; set; } = "";
+        [FirestoreProperty]
+        public string description { get; set; } = "";
+        [FirestoreProperty]
+        public string image_url { get; set; } = "";
+        [FirestoreProperty]
+        public int price { get; set; }
+        [FirestoreProperty]
+        public PriceCurrency currency { get; set; }
+        [FirestoreProperty]
+        public bool isActive { get; set; } = true;
+        [FirestoreProperty]
+        public string sale_Start_Date { get; set; } = "2026-01-01 00:00:00";
+        [FirestoreProperty]
+        public string sale_End_Date { get; set; } = "2099-12-31 23:59:59";
+    }
+
+    public enum CurrencyType
+    {
+        Gold = 0,        // 골드
+        Stellastone = 1, // 성석 (유료 재화)
+        Stardust = 2     // 별가루
+    }
+
+    public class PurchaseRequest
+    {
+        public string productId { get; set; } = "";
+        public int quantity { get; set; } = 1;
+    }
+
+    public class PurchaseResponse
+    {
+        public string status { get; set; } = "success";
+        public string message { get; set; } = "";
+        public string productId { get; set; } = "";
+        public int quantity { get; set; }
+        public int remainingGold { get; set; }
+        public int remainingStellastone { get; set; }
+        public int remainingStardust { get; set; }
+        public List<string> obtainedCardIds { get; set; } = new List<string>();
+        public string? obtainedItemId { get; set; }
+    }
+
     // Firestore에 저장할 사용자 데이터 모델
     [FirestoreData]
     public class UserData
@@ -31,13 +103,43 @@ namespace GameServer
         public string? Username { get; set; }
 
         [FirestoreProperty]
-        public int Level { get; set; }
+        public int Level { get; set; } = 1;
+
+        [FirestoreProperty]
+        public int Exp { get; set; } = 0;
+
+        [FirestoreProperty]
+        public int Score { get; set; } = 1000;
+
+        [FirestoreProperty]
+        public int WinCount { get; set; } = 0;
+
+        [FirestoreProperty]
+        public int LossCount { get; set; } = 0;
 
         [FirestoreProperty]
         public Timestamp CreateTime { get; set; }
 
         [FirestoreProperty]
         public string? SelectDeck { get; set; }
+
+        [FirestoreProperty]
+        public int Gold { get; set; }
+
+        [FirestoreProperty]
+        public int Stardust { get; set; }
+
+        [FirestoreProperty]
+        public int Stellastone { get; set; }
+
+        [FirestoreProperty]
+        public List<string> OwnedSkins { get; set; } = new List<string>();
+
+        [FirestoreProperty]
+        public List<string> OwnedEmotes { get; set; } = new List<string>();
+
+        [FirestoreProperty]
+        public Dictionary<string, int> OwnedCards { get; set; } = new Dictionary<string, int>();
     }
 
     [FirestoreData]
@@ -139,9 +241,10 @@ namespace GameServer
             });
 
             // ==================================================================
-            // (신규) 서버 시작 전 카드 데이터베이스 로드
+            // (신규) 서버 시작 전 카드 및 상점 데이터베이스 로드
             // ==================================================================
             await ServerCardDatabase.Instance.InitializeAsync(firestoreDb);
+            await ServerProductDatabase.Instance.InitializeAsync(firestoreDb);
 
             var app = builder.Build();
 
@@ -186,7 +289,13 @@ namespace GameServer
                     {
                         Username = req.username,
                         Level = 1,
-                        CreateTime = Timestamp.GetCurrentTimestamp()
+                        CreateTime = Timestamp.GetCurrentTimestamp(),
+                        Gold = 0,
+                        Stardust = 0,
+                        Stellastone = 0,
+                        OwnedSkins = new List<string>(),
+                        OwnedEmotes = new List<string>(),
+                        OwnedCards = new Dictionary<string, int>()
                     };
                     await docRef.SetAsync(userData);
                     Console.WriteLine($"✅ Firestore에 사용자 정보 저장 성공: {userRecord.Uid}");
@@ -335,12 +444,18 @@ namespace GameServer
 
             // 2. 로그인(토큰 검증) API: POST /api/auth/verify-token
             // 클라이언트(Unity)가 Firebase SDK로 로그인 후 받은 ID 토큰을 이 API로 보내 검증합니다.
-            app.MapPost("/api/auth/verify-token", async (IDictionary<string, string> req) =>
+            app.MapPost("/api/auth/verify-token", async (
+                IDictionary<string, string> req,
+                FirestoreDb db) =>
             {
                 string idToken = req["token"];
                 FirebaseToken decodedToken = await FirebaseAuth.DefaultInstance.VerifyIdTokenAsync(idToken);
                 string uid = decodedToken.Uid;
                 Console.WriteLine($"✅ 토큰 검증 성공, 로그인 유저: {uid}");
+
+                // 기존 유저 로그인 시 누락된 항목(Gold, Level, CreateTime, 기본 덱 등) 자동 생성/보정
+                await EnsureUserDataIntegrityAsync(uid, db);
+
                 return Results.Ok(new { status = "success", message = "로그인 성공!", user_id = uid });
             });
 
@@ -541,6 +656,188 @@ namespace GameServer
         });
 
             // ==================================================================
+            // 상점 상품 목록 조회 API: GET /api/shop/products
+            // ==================================================================
+            app.MapGet("/api/shop/products", (int? category_id) =>
+            {
+                var filtered = ServerProductDatabase.Instance.GetProducts(category_id);
+
+                Console.WriteLine($"[Shop] 🛒 상품 목록 조회 요청: category_id={category_id} (반환: {filtered.Count}개)");
+
+                return Results.Ok(new
+                {
+                    status = "success",
+                    message = "상품 목록 조회 성공",
+                    data = filtered
+                });
+            });
+
+            // ==================================================================
+            // 상점 상품 구매 API: POST /api/shop/purchase
+            // ==================================================================
+            app.MapPost("/api/shop/purchase", async (
+                PurchaseRequest req,
+                FirestoreDb db,
+                [FromHeader(Name = "Authorization")] string authorization) =>
+            {
+                string? uid = await VerifyTokenAsync(authorization);
+                if (uid == null)
+                {
+                    return Results.Json(new { status = "error", message = "인증에 실패했습니다." }, statusCode: 401);
+                }
+
+                if (req.quantity <= 0) req.quantity = 1;
+
+                try
+                {
+                    DocumentReference userRef = db.Collection("Users").Document(uid);
+                    DocumentSnapshot snapshot = await userRef.GetSnapshotAsync();
+                    if (!snapshot.Exists)
+                    {
+                        return Results.Json(new { status = "error", message = "유저 정보를 찾을 수 없습니다." }, statusCode: 404);
+                    }
+
+                    UserData userData = snapshot.ConvertTo<UserData>();
+
+                    ProductData? product = ServerProductDatabase.Instance.GetProduct(req.productId);
+                    if (product == null || !product.isActive)
+                    {
+                        return Results.Json(new { status = "error", message = "존재하지 않거나 판매가 종료된 상품입니다." });
+                    }
+
+                    int totalCost = product.price * req.quantity;
+                    CurrencyType currencyType = (CurrencyType)(int)product.currency;
+                    int packCountToOpen = 0;
+                    string? skinToGrant = null;
+                    string? emoteToGrant = null;
+                    int goldToGrant = 0;
+
+                    if (product.category_Id == ShopCategory.CardPack)
+                    {
+                        packCountToOpen = 1 * req.quantity;
+                    }
+                    else if (product.category_Id == ShopCategory.LeaderSkin)
+                    {
+                        skinToGrant = product.productId;
+                        if (userData.OwnedSkins.Contains(skinToGrant))
+                        {
+                            return Results.Json(new { status = "error", message = "이미 보유 중인 스킨입니다." });
+                        }
+                    }
+                    else if (product.category_Id == ShopCategory.Emote)
+                    {
+                        emoteToGrant = product.productId;
+                        if (userData.OwnedEmotes.Contains(emoteToGrant))
+                        {
+                            return Results.Json(new { status = "error", message = "이미 보유 중인 이모티콘입니다." });
+                        }
+                    }
+
+                    // 1. 재화 잔액 검증
+                    if (currencyType == CurrencyType.Gold && userData.Gold < totalCost)
+                    {
+                        return Results.Json(new { status = "error", message = $"골드가 부족합니다. (필요: {totalCost}, 보유: {userData.Gold})" });
+                    }
+                    if (currencyType == CurrencyType.Stellastone && userData.Stellastone < totalCost)
+                    {
+                        return Results.Json(new { status = "error", message = $"성석이 부족합니다. (필요: {totalCost}, 보유: {userData.Stellastone})" });
+                    }
+                    if (currencyType == CurrencyType.Stardust && userData.Stardust < totalCost)
+                    {
+                        return Results.Json(new { status = "error", message = $"별가루가 부족합니다. (필요: {totalCost}, 보유: {userData.Stardust})" });
+                    }
+
+                    // 2. 재화 차감
+                    if (currencyType == CurrencyType.Gold) userData.Gold -= totalCost;
+                    else if (currencyType == CurrencyType.Stellastone) userData.Stellastone -= totalCost;
+                    else if (currencyType == CurrencyType.Stardust) userData.Stardust -= totalCost;
+
+                    // 3. 보상 지급
+                    if (goldToGrant > 0)
+                    {
+                        userData.Gold += goldToGrant;
+                    }
+
+                    if (!string.IsNullOrEmpty(skinToGrant) && !userData.OwnedSkins.Contains(skinToGrant))
+                    {
+                        userData.OwnedSkins.Add(skinToGrant);
+                    }
+
+                    if (!string.IsNullOrEmpty(emoteToGrant) && !userData.OwnedEmotes.Contains(emoteToGrant))
+                    {
+                        userData.OwnedEmotes.Add(emoteToGrant);
+                    }
+
+                    List<string> obtainedCards = new List<string>();
+                    if (packCountToOpen > 0)
+                    {
+                        Random rng = new Random();
+                        var allCards = ServerCardDatabase.Instance.GetAllCards();
+                        var commonCards = allCards.Where(c => c.Rarity == CardRarity.common).ToList();
+                        var rareCards = allCards.Where(c => c.Rarity == CardRarity.rare).ToList();
+                        var epicCards = allCards.Where(c => c.Rarity == CardRarity.epic).ToList();
+                        var legCards = allCards.Where(c => c.Rarity == CardRarity.legendary).ToList();
+
+                        for (int p = 0; p < packCountToOpen; p++)
+                        {
+                            for (int i = 0; i < 5; i++)
+                            {
+                                int roll = rng.Next(1, 10001);
+                                ServerCardData? chosen = null;
+
+                                // 전설: 2.0%
+                                if (roll <= 200 && legCards.Count > 0) chosen = legCards[rng.Next(legCards.Count)];
+                                // 특급: 6.5%
+                                else if (roll <= 850 && epicCards.Count > 0) chosen = epicCards[rng.Next(epicCards.Count)];
+                                // 희귀: 21.5%
+                                else if (roll <= 3000 && rareCards.Count > 0) chosen = rareCards[rng.Next(rareCards.Count)];
+                                // 일반: 70.0%
+                                else if (commonCards.Count > 0) chosen = commonCards[rng.Next(commonCards.Count)];
+                                else if (allCards.Count > 0) chosen = allCards[rng.Next(allCards.Count)];
+
+                                if (chosen != null && !string.IsNullOrEmpty(chosen.CardID))
+                                {
+                                    obtainedCards.Add(chosen.CardID);
+                                    if (userData.OwnedCards.ContainsKey(chosen.CardID))
+                                    {
+                                        userData.OwnedCards[chosen.CardID]++;
+                                    }
+                                    else
+                                    {
+                                        userData.OwnedCards[chosen.CardID] = 1;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // 4. Firestore 유저 문서 저장
+                    await userRef.SetAsync(userData, SetOptions.MergeAll);
+                    Console.WriteLine($"✅ [Shop] 상품 구매 완료: 유저 {uid} | 상품ID: {req.productId} | 수량: {req.quantity}");
+
+                    PurchaseResponse res = new PurchaseResponse
+                    {
+                        status = "success",
+                        message = "구매가 완료되었습니다.",
+                        productId = req.productId,
+                        quantity = req.quantity,
+                        remainingGold = userData.Gold,
+                        remainingStellastone = userData.Stellastone,
+                        remainingStardust = userData.Stardust,
+                        obtainedCardIds = obtainedCards,
+                        obtainedItemId = skinToGrant ?? emoteToGrant
+                    };
+
+                    return Results.Ok(res);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"❌ [Shop] 상품 구매 중 서버 오류: {ex.Message}");
+                    return Results.Json(new { status = "error", message = "구매 처리 중 서버 오류가 발생했습니다." }, statusCode: 500);
+                }
+            });
+
+            // ==================================================================
             // 7. WebSocket 미들웨어 활성화 (신규 추가)
             // ==================================================================
             // HTTP 파이프라인에 WebSocket 기능을 추가합니다.
@@ -660,6 +957,173 @@ namespace GameServer
             {
                 Console.WriteLine($"❌ 토큰 문자열 검증 중 알 수 없는 오류: {ex.Message}");
                 return null;
+            }
+        }
+
+        /// <summary>
+        /// 유저 접속/로그인 시 Firestore Users/{uid} 문서 및 누락된 필드를 대조하여 자동 보정 및 생성합니다.
+        /// </summary>
+        public static async Task EnsureUserDataIntegrityAsync(string uid, FirestoreDb db)
+        {
+            if (string.IsNullOrEmpty(uid)) return;
+
+            try
+            {
+                DocumentReference userDocRef = db.Collection("Users").Document(uid);
+                DocumentSnapshot snapshot = await userDocRef.GetSnapshotAsync();
+
+                if (!snapshot.Exists)
+                {
+                    // 1. 유저 문서가 전혀 없는 경우 Auth 정보 기반으로 신규 생성
+                    UserRecord? userRecord = null;
+                    try
+                    {
+                        userRecord = await FirebaseAuth.DefaultInstance.GetUserAsync(uid);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"[UserDataSync] Auth 유저 정보 조회 실패: {ex.Message}");
+                    }
+
+                    string displayName = !string.IsNullOrEmpty(userRecord?.DisplayName)
+                        ? userRecord.DisplayName
+                        : (!string.IsNullOrEmpty(userRecord?.Email) ? userRecord.Email.Split('@')[0] : "Player");
+
+                    UserData newUserData = new UserData
+                    {
+                        Username = displayName,
+                        Level = 1,
+                        CreateTime = Timestamp.GetCurrentTimestamp(),
+                        Gold = 0,
+                        Stardust = 0,
+                        Stellastone = 0,
+                        OwnedSkins = new List<string>(),
+                        OwnedEmotes = new List<string>(),
+                        OwnedCards = new Dictionary<string, int>()
+                    };
+
+                    await userDocRef.SetAsync(newUserData);
+                    Console.WriteLine($"✅ [UserDataSync] 기존 유저 {uid}의 UserData 문서 신규 생성 완료 (Gold: 0, Stardust: 0, Stellastone: 0)");
+
+                    // 기본 덱 생성
+                    CollectionReference decksRef = userDocRef.Collection("Decks");
+                    string initialDeckId = "testDeck_1";
+                    DeckData initialDeck = new DeckData
+                    {
+                        deckId = initialDeckId,
+                        deckName = "테스트 덱",
+                        deckClass = "임시 직업",
+                        cardIds = new List<string>()
+                    };
+                    await decksRef.Document(initialDeckId).SetAsync(initialDeck);
+                    Console.WriteLine($"✅ [UserDataSync] 기본 덱 생성 완료: {uid}");
+                }
+                else
+                {
+                    // 2. 유저 문서가 존재할 때 누락된 필드가 있는지 확인하여 부분 갱신
+                    Dictionary<string, object> updates = new Dictionary<string, object>();
+                    Dictionary<string, object> currentData = snapshot.ToDictionary() ?? new Dictionary<string, object>();
+
+                    if (!currentData.ContainsKey("Gold"))
+                    {
+                        updates["Gold"] = 0;
+                    }
+
+                    if (!currentData.ContainsKey("Stardust"))
+                    {
+                        updates["Stardust"] = 0;
+                    }
+
+                    if (!currentData.ContainsKey("Stellastone"))
+                    {
+                        updates["Stellastone"] = 0;
+                    }
+
+                    if (!currentData.ContainsKey("OwnedSkins") || currentData["OwnedSkins"] == null)
+                    {
+                        updates["OwnedSkins"] = new List<string>();
+                    }
+
+                    if (!currentData.ContainsKey("OwnedEmotes") || currentData["OwnedEmotes"] == null)
+                    {
+                        updates["OwnedEmotes"] = new List<string>();
+                    }
+
+                    if (!currentData.ContainsKey("OwnedCards") || currentData["OwnedCards"] == null)
+                    {
+                        updates["OwnedCards"] = new Dictionary<string, int>();
+                    }
+
+                    if (!currentData.ContainsKey("Level") || currentData["Level"] == null)
+                    {
+                        updates["Level"] = 1;
+                    }
+
+                    if (!currentData.ContainsKey("Exp") || currentData["Exp"] == null)
+                    {
+                        updates["Exp"] = 0;
+                    }
+
+                    if (!currentData.ContainsKey("Score") || currentData["Score"] == null)
+                    {
+                        updates["Score"] = 1000;
+                    }
+
+                    if (!currentData.ContainsKey("WinCount") || currentData["WinCount"] == null)
+                    {
+                        updates["WinCount"] = 0;
+                    }
+
+                    if (!currentData.ContainsKey("LossCount") || currentData["LossCount"] == null)
+                    {
+                        updates["LossCount"] = 0;
+                    }
+
+                    if (!currentData.ContainsKey("CreateTime") || currentData["CreateTime"] == null)
+                    {
+                        updates["CreateTime"] = Timestamp.GetCurrentTimestamp();
+                    }
+
+                    if (!currentData.ContainsKey("Username") || string.IsNullOrEmpty(currentData["Username"]?.ToString()))
+                    {
+                        try
+                        {
+                            UserRecord userRecord = await FirebaseAuth.DefaultInstance.GetUserAsync(uid);
+                            updates["Username"] = userRecord.DisplayName ?? (userRecord.Email?.Split('@')[0] ?? "Player");
+                        }
+                        catch
+                        {
+                            updates["Username"] = "Player";
+                        }
+                    }
+
+                    if (updates.Count > 0)
+                    {
+                        await userDocRef.UpdateAsync(updates);
+                        Console.WriteLine($"✅ [UserDataSync] 유저 {uid}의 누락된 필드 자동 보정 완료: {string.Join(", ", updates.Keys)}");
+                    }
+
+                    // 기본 덱 존재 여부 확인
+                    CollectionReference decksRef = userDocRef.Collection("Decks");
+                    QuerySnapshot deckSnapshot = await decksRef.Limit(1).GetSnapshotAsync();
+                    if (deckSnapshot.Count == 0)
+                    {
+                        string initialDeckId = "testDeck_1";
+                        DeckData initialDeck = new DeckData
+                        {
+                            deckId = initialDeckId,
+                            deckName = "테스트 덱",
+                            deckClass = "임시 직업",
+                            cardIds = new List<string>()
+                        };
+                        await decksRef.Document(initialDeckId).SetAsync(initialDeck);
+                        Console.WriteLine($"✅ [UserDataSync] 덱이 없어 기본 덱 자동 생성 완료: {uid}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"❌ [UserDataSync] 유저 데이터 검사/보정 중 오류: {ex.Message}");
             }
         }
     }

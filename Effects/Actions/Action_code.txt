@@ -1,0 +1,899 @@
+This file is a merged representation of a subset of the codebase, containing specifically included files, combined into a single document by Repomix.
+
+<file_summary>
+This section contains a summary of this file.
+
+<purpose>
+This file contains a packed representation of a subset of the repository's contents that is considered the most important context.
+It is designed to be easily consumable by AI systems for analysis, code review,
+or other automated processes.
+</purpose>
+
+<file_format>
+The content is organized as follows:
+1. This summary section
+2. Repository information
+3. Directory structure
+4. Repository files (if enabled)
+5. Multiple file entries, each consisting of:
+  - File path as an attribute
+  - Full contents of the file
+</file_format>
+
+<usage_guidelines>
+- This file should be treated as read-only. Any changes should be made to the
+  original repository files, not this packed version.
+- When processing this file, use the file path to distinguish
+  between different files in the repository.
+- Be aware that this file may contain sensitive information. Handle it with
+  the same level of security as you would the original repository.
+</usage_guidelines>
+
+<notes>
+- Some files may have been excluded based on .gitignore rules and Repomix's configuration
+- Binary files are not included in this packed representation. Please refer to the Repository Structure section for a complete list of file paths, including binary files
+- Only files matching these patterns are included: **/*.cs
+- Files matching patterns in .gitignore are excluded
+- Files matching default ignore patterns are excluded
+- Files are sorted by Git change count (files with more changes are at the bottom)
+</notes>
+
+</file_summary>
+
+<directory_structure>
+BindAction.cs
+BuffAction.cs
+DamageAction.cs
+DeckBuffAction.cs
+DestroyAction.cs
+DrawAction.cs
+ForceAttackAction.cs
+GainManaAction.cs
+GrantKeywordAction.cs
+HandBuffAction.cs
+HealAction.cs
+ManaModAction.cs
+RandomDamageAction.cs
+RandomSummonAction.cs
+ResurrectAction.cs
+SilenceAction.cs
+SummonAction.cs
+SummonFromDeckAction.cs
+</directory_structure>
+
+<files>
+This section contains the contents of the repository's files.
+
+<file path="BindAction.cs">
+using System.Threading.Tasks;
+using GameServer.Effects.TargetSelector;
+
+
+namespace GameServer.Effects.Actions
+{
+    /// <summary>
+    /// 대상(들)에게 속박을 부여하는 액션입니다. (단일/광역 모두 호환)
+    /// </summary>
+    public class BindAction : IAction
+    {
+        public ITargetSelector Target { get; set; } = new ContextTargetSelector(); 
+        
+        public List<ICondition> Filters { get; set; } = new List<ICondition>();
+
+        public Task ExecuteAsync(GameState state, EffectContext context)
+        {
+            var targets = Target.GetTargets(state, context);
+            int sourceId = context.SourceEntity?.EntityId ?? 0;
+
+            foreach (var target in targets)
+            {
+                if (Filters != null && Filters.Count > 0)
+                {
+                    var tempContext = new EffectContext(context.OwnerUid, context.SourceCard, context.Trigger)
+                    {
+                        SourceEntity = context.SourceEntity, TargetEntity = target
+                    };
+
+                    bool pass = true;
+                    foreach (var filter in Filters)
+                    {
+                        if (!filter.Check(state, tempContext)) { pass = false; break; }
+                    }
+                    if (!pass) continue; // 필터 조건에 안 맞으면 건너뜀
+                }
+
+                state.ApplyBind(target, sourceId);
+                state.RaiseEffectLog(target.SourceCard.CardId, context.SourceCard?.CardId, "BindAction");
+            }
+
+            return Task.CompletedTask;
+        }
+    }
+}
+</file>
+
+<file path="BuffAction.cs">
+using System.Threading.Tasks;
+using GameServer.Effects.TargetSelector;
+
+namespace GameServer.Effects.Actions
+{
+    public class BuffAction : IAction
+    {
+        public ITargetSelector Target { get; set; } = new ContextTargetSelector();
+        public List<ICondition> Filters { get; set; } = new List<ICondition>();
+        
+        public int AttackBuff { get; set; } // +1, -2 등 증감치
+        public int HealthBuff { get; set; }
+
+        public Task ExecuteAsync(GameState state, EffectContext context)
+        {
+            var targets = Target.GetTargets(state, context);
+            int sourceId = context.SourceEntity?.EntityId ?? 0;
+
+            foreach (var target in targets)
+            {
+                bool pass = true;
+                foreach (var f in Filters) { if (!f.Check(state, new EffectContext(context.OwnerUid, context.SourceCard, context.Trigger) { SourceEntity = context.SourceEntity, TargetEntity = target })) { pass = false; break; } }
+                if (!pass) continue;
+
+                state.ApplyBuff(target, AttackBuff, HealthBuff, sourceId, context.Trigger);
+                state.RaiseEffectLog(target.SourceCard.CardId, context.SourceCard?.CardId, "BuffAction");
+            }
+            return Task.CompletedTask;
+        }
+    }
+}
+</file>
+
+<file path="DamageAction.cs">
+using System.Threading.Tasks;
+using GameServer.Effects.TargetSelector;
+
+namespace GameServer.Effects.Actions
+{
+    public class DamageAction : IAction
+    {
+        public ITargetSelector Target { get; set; } = new ContextTargetSelector();
+        public List<ICondition> Filters { get; set; } = new List<ICondition>();
+        
+        public int Amount { get; set; } // 데미지 수치
+
+        public async Task ExecuteAsync(GameState state, EffectContext context)
+        {
+            var targets = Target.GetTargets(state, context);
+            int sourceId = context.SourceEntity?.EntityId ?? 0;
+
+            foreach (var target in targets)
+            {
+                // 필터 검사
+                bool pass = true;
+                foreach (var f in Filters) { if (!f.Check(state, new EffectContext(context.OwnerUid, context.SourceCard, context.Trigger) { SourceEntity = context.SourceEntity, TargetEntity = target })) { pass = false; break; } }
+                if (!pass) continue;
+
+                state.RaiseEffectLog(target.SourceCard.CardId, context.SourceCard?.CardId, "DamageAction");
+                await state.ApplyDamageAsync(target, Amount, context.SourceEntity?.EntityId ?? 0);
+            }
+        }
+    }
+}
+</file>
+
+<file path="DeckBuffAction.cs">
+using System.Threading.Tasks;
+using GameServer.Effects.TargetSelector;
+
+namespace GameServer.Effects.Actions
+{
+    public class DeckBuffAction : IAction
+    {
+        public ITargetSelector Target { get; set; } = new SelfSelector();
+        public int AttackBuff { get; set; }
+        public int HealthBuff { get; set; }
+        public int CostBuff { get; set; }
+
+        // 덱 카드를 선별하기 위한 조립식 조건 리스트
+        public List<ICondition> Filters { get; set; } = new List<ICondition>();
+
+        public async Task ExecuteAsync(GameState state, EffectContext context)
+        {
+            
+            var targets = Target.GetTargets(state, context);
+            
+            foreach (var target in targets)
+            {
+                PlayerState p = state.GetPlayerState(target.OwnerUid);
+                
+                // 💡 [사용자님의 아이디어가 실현되는 구간] 조건에 맞는 카드들을 담을 바구니를 만듭니다.
+                List<GameCard> cardsToBuff = new List<GameCard>();
+
+                foreach (var card in p.Deck)
+                {
+                    if (card.Type != CardType.하수인) continue;
+
+                    // 기존 조건(Condition) 판정기들과의 호환을 위해 손패 카드를 임시 개체(Mock)로 포장합니다.
+                    var mockEntity = new GameEntity(0, card, p.Uid);
+                    var tempContext = new EffectContext(p.Uid, context.SourceCard, EffectTriggerType.NONE)
+                    {
+                        TargetEntity = mockEntity,
+                        SourceEntity = context.SourceEntity
+                    };
+
+                    bool isValid = true;
+                    foreach (var filter in Filters)
+                    {
+                        if (!filter.Check(state, tempContext))
+                        {
+                            isValid = false; // 조건 중 하나라도 만족 못 하면 탈락
+                            break;
+                        }
+                    }
+
+                    if (isValid)
+                    {
+                        // 조건 관문을 모두 통과한 카드를 바구니에 담습니다.
+                        cardsToBuff.Add(card);
+                    }
+                }
+
+                // 디버그 확인용 로그 작성
+                Console.WriteLine($"[DeckBuffAction] 🃏 {p.Uid}의 덱 하수인 {cardsToBuff.Count}장에게 버프를 전송합니다.");
+
+                // 💡 걸러진 카드 리스트를 한 번에 전달하여 일괄 처리합니다!
+                await state.ApplyDeckBuffAsync(p.Uid, AttackBuff, HealthBuff, CostBuff, cardsToBuff);
+                
+                state.RaiseEffectLog(target.SourceCard.CardId, context.SourceCard?.CardId, "DeckBuffAction");
+            }
+        }
+    }
+}
+</file>
+
+<file path="DestroyAction.cs">
+using System.Threading.Tasks;
+using GameServer.Effects.TargetSelector;
+
+namespace GameServer.Effects.Actions
+{
+    /// <summary>
+    /// 대상을 데미지나 체력 계산 없이 즉시 처치(파괴)하는 액션입니다.
+    /// </summary>
+    public class DestroyAction : IAction
+    {
+        public ITargetSelector Target { get; set; } = new ContextTargetSelector();
+
+        public Task ExecuteAsync(GameState state, EffectContext context)
+        {
+            var targets = Target.GetTargets(state, context);
+
+            foreach (var target in targets)
+            {
+                // 영웅(명치)은 즉사기로 죽일 수 없도록 방어
+                if (target.IsLeader) continue;
+
+                // 핵심: 체력을 0으로 조작하지 않고 '파괴 상태'로 만듭니다.
+                target.IsDestroyed = true;
+
+                // 신규 DESTROY 이벤트를 로그에 남겨 유니티에서 전용 이펙트를 틀 수 있게 합니다.
+                int sourceId = context.SourceEntity?.EntityId ?? 0;
+                state.LogEvent(GameEventType.DESTROY, sourceId, target.EntityId);
+                state.RaiseEffectLog(target.SourceCard.CardId, context.SourceCard?.CardId, "DestroyAction");
+            }
+
+            return Task.CompletedTask;
+        }
+    }
+}
+</file>
+
+<file path="DrawAction.cs">
+using System.Threading.Tasks;
+using GameServer.Effects.TargetSelector;
+
+namespace GameServer.Effects.Actions
+{
+    /// <summary>
+    /// 카드를 드로우합니다. 필터 옵션을 넣으면 덱에서 조건에 맞는 카드를 서치하여 뽑습니다.
+    /// </summary>
+    public class DrawAction : IAction
+    {
+        public int Count { get; set; } = 1;
+        
+        // 대상 지정: 이전 대화에서 만든 아군 리더(명치)를 기본값으로 사용
+        public ITargetSelector Target { get; set; } = new TargetSelector.FriendlyLeaderSelector(); 
+
+        // ==========================================
+        // 덱 서치용 필터 옵션들 (null이면 무시)
+        // ==========================================
+        public string? SpecificCardId { get; set; } // 특정 카드 ID 지정 (예: "cards-gangzi-001")
+        public CardType? TargetCardType { get; set; } // 종류 지정 (예: 하수인, 주문)
+        public int? MaxCost { get; set; } // 코스트 제한 (예: 2코스트 이하)
+        public CardTribe? TargetTribe { get; set; } // 종족 지정 (예: 강도단)
+
+        // 1. [수정] 비동기 대기를 지원하기 위해 Task -> async Task로 선언을 변경합니다.
+        public async Task ExecuteAsync(GameState state, EffectContext context)
+        {
+            var targets = Target.GetTargets(state, context);
+            
+            foreach (var target in targets)
+            {
+                PlayerState p = state.GetPlayerState(target.OwnerUid);
+                
+                for (int i = 0; i < Count; i++)
+                {
+                    // 필터가 하나라도 적혀 있는지 확인
+                    bool hasFilter = SpecificCardId != null || TargetCardType != null || MaxCost != null || TargetTribe != null;
+
+                    if (!hasFilter)
+                    {
+                        // 2-A. [수정] 일반 드로우
+                        // GameState의 공용 비동기 드로우&동기화 메서드를 호출하여 클라이언트에 패킷을 전송합니다.
+                        await state.DrawCardWithSyncAsync(target.OwnerUid);
+                    }
+                    else
+                    {
+                        // 2-B. 서치 드로우 (조건이 있음) [1]
+                        // 덱을 순회하며 조건에 모두 맞는 카드들을 걸러냅니다 [2].
+                        var validCards = p.Deck.Where(c => 
+                            (SpecificCardId == null || c.CardId == SpecificCardId) &&
+                            (TargetCardType == null || c.Type == TargetCardType) &&
+                            (MaxCost == null || c.CurrentCost <= MaxCost) &&
+                            (TargetTribe == null || c.Tribe == TargetTribe)
+                        ).ToList();
+
+                        if (validCards.Count > 0)
+                        {
+                            // 조건에 맞는 카드가 여러 장이면 무작위로 하나 선택
+                            var selectedCard = validCards[state.Rng.Next(validCards.Count)];
+                            
+                            // [핵심 로직] 해당 카드를 덱 맨 위(마지막)로 끌어올림 [3]
+                            p.Deck.Remove(selectedCard);
+                            p.Deck.Add(selectedCard);
+                            
+                            // [수정] 서치된 카드가 덱 맨 위로 올라갔으므로, 공용 동기화 드로우를 실행합니다.
+                            await state.DrawCardWithSyncAsync(target.OwnerUid);
+                        }
+                        else
+                        {
+                            // 조건에 맞는 카드가 없으면 아무것도 뽑지 않습니다.
+                        }
+                    }
+                }
+                state.RaiseEffectLog(target.SourceCard.CardId, context.SourceCard?.CardId, "DrawAction");
+            }
+        }
+
+        // 3. [삭제] p.DrawCard() 및 UpdateZone을 동기식으로 처리하던 DrawAndSync 헬퍼 함수는 
+        // 이제 GameState.DrawCardWithSyncAsync 내부에서 더 안전하게 공통 처리되므로 깔끔하게 제거합니다.
+    }
+}
+</file>
+
+<file path="ForceAttackAction.cs">
+using System.Threading.Tasks;
+using GameServer.Effects.TargetSelector;
+
+namespace GameServer.Effects.Actions
+{
+    public class ForceAttackAction : IAction
+    {
+        // 강제로 공격을 '시도할' 녀석 (기본값: 유니티가 클릭한 아군)
+        public ITargetSelector Attacker { get; set; } = new ContextTargetSelector();
+        
+        // '맞을' 녀석 (기본값: 무작위 적 1명)
+        public ITargetSelector Defender { get; set; } = new RandomEnemyCharacterSelector();
+
+        public async Task ExecuteAsync(GameState state, EffectContext context)
+        {
+            var attackers = Attacker.GetTargets(state, context).ToList();
+            var defenders = Defender.GetTargets(state, context).ToList();
+
+            foreach (var att in attackers)
+            {
+                if (defenders.Count == 0) break;
+                
+                // 방어자가 여러 명이면 무작위 1명 선발 (1명이면 걔가 맞음)
+                var def = defenders[state.Rng.Next(defenders.Count)];
+
+                // 둘 다 살아있고, 자기 자신을 공격하는 게 아닐 때만 전투 성립
+                if (att.Health > 0 && def.Health > 0 && att.EntityId != def.EntityId)
+                {
+                    state.LogEvent(GameEventType.ATTACK, att.EntityId, def.EntityId, 0, null, context.Trigger);
+                    state.RaiseEffectLog(def.SourceCard.CardId, att.SourceCard?.CardId, "ForceAttackAction");
+                    await state.ResolveCombatAsync(att, def);
+                }
+            }
+        }
+    }
+}
+</file>
+
+<file path="GainManaAction.cs">
+using System.Threading.Tasks;
+
+namespace GameServer.Effects.Actions
+{
+    /// <summary>
+    /// 타겟 지정 없이, 이 카드를 사용한 플레이어에게 즉시 마나를 부여하는 액션입니다.
+    /// </summary>
+    public class GainManaAction : IAction
+    {
+        public int Amount { get; set; }
+
+        public GainManaAction() { }
+
+        public Task ExecuteAsync(GameState state, EffectContext context)
+        {
+            // 타겟(TargetEntity) 검사를 아예 하지 않습니다!
+            
+            // 1. 카드를 낸 주인의 상태를 가져옵니다.
+            PlayerState p = state.GetPlayerState(context.OwnerUid);
+
+            // 2. 최대 마나를 초과하여 임시 마나를 얻을 수 있도록 직접 더해줍니다.
+            p.CurrentMana += Amount;
+
+            // 참고: 마나 수치가 바뀌면 효과 처리가 모두 끝난 직후 
+            // GameState.BroadcastUpdatesAsync에서 알아서 클라이언트(S_UpdateMana)로 동기화해 줍니다.
+            state.RaiseEffectLog(context.OwnerUid, context.SourceCard?.CardId, "GainManaAction");
+            return Task.CompletedTask;
+        }
+    }
+}
+</file>
+
+<file path="GrantKeywordAction.cs">
+using System.Threading.Tasks;
+using GameServer.Effects.TargetSelector;
+
+namespace GameServer.Effects.Actions
+{
+    public class GrantKeywordAction : IAction
+    {
+        public ITargetSelector Target { get; set; } = new ContextTargetSelector();
+        public List<ICondition> Filters { get; set; } = new List<ICondition>();
+        
+        public List<string> Keywords { get; set; } = new List<string>(); // 부여할 키워드 배열 (예: ["Rush", "Taunt"])
+
+        public Task ExecuteAsync(GameState state, EffectContext context)
+        {
+            var targets = Target.GetTargets(state, context);
+            int sourceId = context.SourceEntity?.EntityId ?? 0;
+
+            foreach (var target in targets)
+            {
+                bool pass = true;
+                foreach (var f in Filters) { if (!f.Check(state, new EffectContext(context.OwnerUid, context.SourceCard, context.Trigger) { SourceEntity = context.SourceEntity, TargetEntity = target })) { pass = false; break; } }
+                if (!pass) continue;
+
+                if (Keywords.Count > 0)
+                {
+                    state.GrantKeyword(target, Keywords, sourceId);
+                }
+                state.RaiseEffectLog(target.SourceCard.CardId, context.SourceCard?.CardId, "GrantKeywordAction");
+            }
+            return Task.CompletedTask;
+        }
+    }
+}
+</file>
+
+<file path="HandBuffAction.cs">
+using System.Threading.Tasks;
+using GameServer.Effects.TargetSelector;
+
+namespace GameServer.Effects.Actions
+{
+    public class HandBuffAction : IAction
+    {
+        public ITargetSelector Target { get; set; } = new SelfSelector(); // 누구의 손패인가?
+        public int AttackBuff { get; set; }
+        public int HealthBuff { get; set; }
+        public int CostBuff { get; set; }
+
+        // 손패 카드를 선별하기 위한 조립식 조건 리스트
+        public List<ICondition> Filters { get; set; } = new List<ICondition>();
+
+        public async Task ExecuteAsync(GameState state, EffectContext context)
+        {
+            var targets = Target.GetTargets(state, context);
+            
+            foreach (var target in targets)
+            {
+                PlayerState p = state.GetPlayerState(target.OwnerUid);
+                
+                // 💡 [사용자님의 아이디어가 실현되는 구간] 조건에 맞는 카드들을 담을 바구니를 만듭니다.
+                List<GameCard> cardsToBuff = new List<GameCard>();
+
+                foreach (var card in p.Hand)
+                {
+                    if (card.Type != CardType.하수인) continue;
+
+                    // 기존 조건(Condition) 판정기들과의 호환을 위해 손패 카드를 임시 개체(Mock)로 포장합니다.
+                    var mockEntity = new GameEntity(0, card, p.Uid);
+                    var tempContext = new EffectContext(p.Uid, context.SourceCard, EffectTriggerType.NONE)
+                    {
+                        TargetEntity = mockEntity,
+                        SourceEntity = context.SourceEntity
+                    };
+
+                    bool isValid = true;
+                    foreach (var filter in Filters)
+                    {
+                        if (!filter.Check(state, tempContext))
+                        {
+                            isValid = false; // 조건 중 하나라도 만족 못 하면 탈락
+                            break;
+                        }
+                    }
+
+                    if (isValid)
+                    {
+                        // 조건 관문을 모두 통과한 카드를 바구니에 담습니다.
+                        cardsToBuff.Add(card);
+                    }
+                }
+
+                // 디버그 확인용 로그 작성
+                Console.WriteLine($"[HandBuffAction] 🃏 {p.Uid}의 손패 하수인 {cardsToBuff.Count}장에게 버프를 전송합니다.");
+
+                // 💡 걸러진 카드 리스트를 한 번에 전달하여 일괄 처리합니다!
+                await state.ApplyHandBuffAsync(p.Uid, AttackBuff, HealthBuff, CostBuff, cardsToBuff);
+                
+                state.RaiseEffectLog(target.SourceCard.CardId, context.SourceCard?.CardId, "HandBuffAction");
+            }
+        }
+    }
+}
+</file>
+
+<file path="HealAction.cs">
+using System.Threading.Tasks;
+using GameServer.Effects.TargetSelector;
+
+namespace GameServer.Effects.Actions
+{
+    public class HealAction : IAction
+    {
+        public ITargetSelector Target { get; set; } = new ContextTargetSelector();
+        public List<ICondition> Filters { get; set; } = new List<ICondition>();
+        
+        public int Amount { get; set; }
+
+        public Task ExecuteAsync(GameState state, EffectContext context)
+        {
+            var targets = Target.GetTargets(state, context);
+            int sourceId = context.SourceEntity?.EntityId ?? 0;
+
+            foreach (var target in targets)
+            {
+                bool pass = true;
+                foreach (var f in Filters) { if (!f.Check(state, new EffectContext(context.OwnerUid, context.SourceCard, context.Trigger) { SourceEntity = context.SourceEntity, TargetEntity = target })) { pass = false; break; } }
+                if (!pass) continue;
+
+                state.ApplyHeal(target, Amount, sourceId);
+                state.RaiseEffectLog(target.SourceCard.CardId, context.SourceCard?.CardId, "HealAction");
+            }
+            return Task.CompletedTask;
+        }
+    }
+}
+</file>
+
+<file path="ManaModAction.cs">
+using System.Threading.Tasks;
+using GameServer.Effects.TargetSelector;
+
+namespace GameServer.Effects.Actions
+{
+    public class ManaModAction : IAction
+    {
+        public int Amount { get; set; } // +1(마나 펌핑), -1(마나 번)
+        public ITargetSelector Target { get; set; } = new SelfSelector();
+
+        public Task ExecuteAsync(GameState state, EffectContext context)
+        {
+            var targets = Target.GetTargets(state, context);
+            
+            foreach (var target in targets)
+            {
+                state.ApplyManaMod(target.OwnerUid, Amount);
+                state.RaiseEffectLog(target.SourceCard.CardId, context.SourceCard?.CardId, "ManaModAction");
+            }
+            return Task.CompletedTask;
+        }
+    }
+}
+</file>
+
+<file path="RandomDamageAction.cs">
+using System.Collections.Generic;
+using System.Linq;
+using System.Threading.Tasks;
+using GameServer.Effects.TargetSelector;
+
+namespace GameServer.Effects.Actions
+{
+    /// <summary>
+    /// 살아있는 무작위 적(영웅 포함)에게 피해를 주는 액션입니다.
+    /// </summary>
+    public class RandomDamageAction : IAction
+    {
+        public int Amount { get; set; }
+
+        public RandomDamageAction(int amount)
+        {
+            Amount = amount;
+        }
+
+        public async Task ExecuteAsync(GameState state, EffectContext context)
+        {
+            // 1. context.OwnerUid는 2단계의 스마트 시스템 덕분에 이 효과를 가진 '원래 카드 주인'을 정확히 가리킵니다.
+            PlayerState opponent = state.GetPlayerState(context.OwnerUid, true); // true = 상대방 찾기
+
+            // 2. 살아있는 적(영웅 + 하수인) 목록 만들기
+            var enemies = new List<GameEntity> { opponent.Leader };
+            enemies.AddRange(opponent.Field.Where(e => e != null && e.Health > 0)!);
+            enemies.AddRange(opponent.MemberZone.Where(e => e != null && e.Health > 0)!);
+
+            // 3. 무작위로 하나 선택해서 데미지 주기
+            if (enemies.Count > 0)
+            {
+                int randomIndex = state.Rng.Next(enemies.Count);
+                GameEntity target = enemies[randomIndex];
+
+                // 4. (선택) 클라이언트 연출을 위해 이 효과를 쏜 본체(Entity) 찾기
+                int sourceId = 0;
+                PlayerState me = state.GetPlayerState(context.OwnerUid);
+                var myEntity = me.Field.FirstOrDefault(e => e != null && e.SourceCard == context.SourceCard);
+                if (myEntity != null) sourceId = myEntity.EntityId;
+
+                // 5. 데미지 쾅!
+                await state.ApplyDamageAsync(target, Amount, context.SourceEntity?.EntityId ?? 0);
+                state.RaiseEffectLog(target.SourceCard.CardId, context.SourceCard?.CardId, "RandomDamageAction");
+            }
+        }
+    }
+}
+</file>
+
+<file path="RandomSummonAction.cs">
+using System.Linq;
+using System.Threading.Tasks;
+
+namespace GameServer.Effects.Actions
+{
+    /// <summary>
+    /// 서버 DB에 존재하는 모든 카드 중 조건에 맞는 카드를 무작위로 창조하여 필드에 소환합니다.
+    /// </summary>
+    public class RandomSummonAction : IAction
+    {
+        public int Count { get; set; } = 1;
+
+        // 서치용 필터 옵션들 (null이면 무시)
+        public CardType? TargetCardType { get; set; } 
+        public int? MinCost { get; set; } 
+        public int? MaxCost { get; set; } 
+        public CardTribe? TargetTribe { get; set; }
+
+        public Task ExecuteAsync(GameState state, EffectContext context)
+        {
+            // 1. 서버 DB에서 모든 카드의 설계도(ServerCardData)를 가져옵니다.
+            var allCards = ServerCardDatabase.Instance.GetAllCards();
+
+            // 2. 필터 조건에 맞는 카드만 추려냅니다.
+            var validCards = allCards.Where(c => 
+                // 기본적으로 하수인이나 멤버만 소환 대상 (주문 방어)
+                (c.CardType == CardType.하수인 || c.CardType == CardType.멤버) && 
+                (TargetCardType == null || c.CardType == TargetCardType) &&
+                (MaxCost == null || c.Cost <= MaxCost) &&
+                (MinCost == null || c.Cost >= MinCost) &&
+                (TargetTribe == null || c.Tribe == TargetTribe)
+            ).ToList();
+
+            // 조건에 맞는 카드가 아예 없다면 종료
+            if (validCards.Count == 0) return Task.CompletedTask;
+
+            // 3. 지정된 횟수(Count)만큼 무작위로 카드를 뽑아 소환!
+            for (int i = 0; i < Count; i++)
+            {
+                // 걸러진 리스트 중 하나를 랜덤으로 선택
+                var selectedCard = validCards[state.Rng.Next(validCards.Count)];
+                
+                if (selectedCard.CardID != null)
+                {
+                    // GameState에 이미 만들어둔 '카드 ID로 토큰 생성 및 소환' 함수 활용
+                    state.SummonEntityByEffect(context.OwnerUid, selectedCard.CardID);
+                }
+            }
+
+            state.RaiseEffectLog(context.OwnerUid, context.SourceCard?.CardId, "RandomSummonAction");
+
+            return Task.CompletedTask;
+        }
+    }
+}
+</file>
+
+<file path="ResurrectAction.cs">
+using System.Linq;
+using System.Threading.Tasks;
+
+namespace GameServer.Effects.Actions
+{
+    /// <summary>
+    /// 묘지(Graveyard)에서 조건에 맞는 하수인/멤버를 찾아 부활(필드 소환)시킵니다.
+    /// </summary>
+    public class ResurrectAction : IAction
+    {
+        public int Count { get; set; } = 1;
+
+        // 서치용 필터 옵션들
+        public string? SpecificCardId { get; set; } 
+        public CardType? TargetCardType { get; set; } 
+        public int? MinCost { get; set; } 
+        public int? MaxCost { get; set; } 
+        public CardTribe? TargetTribe { get; set; }
+
+        public Task ExecuteAsync(GameState state, EffectContext context)
+        {
+            PlayerState p = state.GetPlayerState(context.OwnerUid);
+
+            for (int i = 0; i < Count; i++)
+            {
+                // 1. 묘지(Graveyard)에서 조건에 맞는 하수인/멤버만 걸러냅니다.
+                var validCards = p.Graveyard.Where(c => 
+                    (c.Type == CardType.하수인 || c.Type == CardType.멤버) && 
+                    (SpecificCardId == null || c.CardId == SpecificCardId) &&
+                    (TargetCardType == null || c.Type == TargetCardType) &&
+                    (MaxCost == null || c.CurrentCost <= MaxCost) &&
+                    (MinCost == null || c.CurrentCost >= MinCost) &&
+                    (TargetTribe == null || c.Tribe == TargetTribe)
+                ).ToList();
+
+                if (validCards.Count > 0)
+                {
+                    // 2. 조건에 맞는 개체 중 무작위로 하나 선택
+                    var selectedCard = validCards[state.Rng.Next(validCards.Count)];
+                    
+                    // 3. 묘지에서 제거 후, 이전 대화에서 만들었던 소환 함수로 필드에 부활!
+                    p.Graveyard.Remove(selectedCard);
+                    state.SummonExistingCard(p.Uid, selectedCard);
+                }
+                else
+                {
+                    break;
+                }
+            }
+
+            state.RaiseEffectLog(context.OwnerUid, context.SourceCard?.CardId, "ResurrectAction");
+
+            return Task.CompletedTask;
+        }
+    }
+}
+</file>
+
+<file path="SilenceAction.cs">
+using System.Threading.Tasks;
+using GameServer.Effects.TargetSelector;
+
+namespace GameServer.Effects.Actions
+{
+    public class SilenceAction : IAction
+    {
+        public ITargetSelector Target { get; set; } = new ContextTargetSelector();
+        public List<ICondition> Filters { get; set; } = new List<ICondition>();
+
+        public Task ExecuteAsync(GameState state, EffectContext context)
+        {
+            var targets = Target.GetTargets(state, context);
+            int sourceId = context.SourceEntity?.EntityId ?? 0;
+
+            foreach (var target in targets)
+            {
+                bool pass = true;
+                foreach (var f in Filters) { if (!f.Check(state, new EffectContext(context.OwnerUid, context.SourceCard, context.Trigger) { SourceEntity = context.SourceEntity, TargetEntity = target })) { pass = false; break; } }
+                if (!pass) continue;
+
+                state.ApplySilence(target, sourceId);
+                state.RaiseEffectLog(target.SourceCard.CardId, context.SourceCard?.CardId, "SilenceAction");
+            }
+            return Task.CompletedTask;
+        }
+    }
+}
+</file>
+
+<file path="SummonAction.cs">
+using System.Threading.Tasks;
+
+namespace GameServer.Effects.Actions
+{
+    /// <summary>
+    /// 특정 카드(토큰 등)를 필드에 소환하는 액션입니다.
+    /// </summary>
+    public class SummonAction : IAction
+    {
+        // JSON에서 입력받을 수 있도록 프로퍼티 추가
+        public string? CardId { get; set; } // 소환할 토큰의 카드 ID (예: "cards-gangzi-1001")
+        public int Count { get; set; } = 1; // 소환할 마릿수
+
+        // Newtonsoft.Json이 객체를 생성할 수 있도록 기본 생성자 추가
+        public SummonAction() { }
+
+        public Task ExecuteAsync(GameState state, EffectContext context)
+        {
+            // CardId가 JSON에 적혀있지 않다면, 이 효과를 발동시킨 원본 카드(자기 자신)를 소환합니다.
+            string targetCardId = string.IsNullOrEmpty(CardId) ? context.SourceCard!.CardId : CardId;
+
+            for (int i = 0; i < Count; i++)
+            {
+                // GameState의 안전한 소환 함수 호출 (빈자리가 없으면 알아서 멈춤)
+                state.SummonEntityByEffect(context.OwnerUid, targetCardId);
+            }
+
+            state.RaiseEffectLog(targetCardId, context.SourceCard?.CardId, "SummonAction");
+
+            return Task.CompletedTask;
+        }
+    }
+}
+</file>
+
+<file path="SummonFromDeckAction.cs">
+using System.Linq;
+using System.Threading.Tasks;
+
+namespace GameServer.Effects.Actions
+{
+    public class SummonFromDeckAction : IAction
+    {
+        public int Count { get; set; } = 1;
+
+        // 서치용 필터 옵션들
+        public string? SpecificCardId { get; set; } 
+        public CardType? TargetCardType { get; set; } 
+        
+        // [신규 추가] 최소 비용 제한과 최대 비용 제한
+        public int? MinCost { get; set; } 
+        public int? MaxCost { get; set; } 
+        
+        public CardTribe? TargetTribe { get; set; }
+
+        public Task ExecuteAsync(GameState state, EffectContext context)
+        {
+            PlayerState p = state.GetPlayerState(context.OwnerUid);
+
+            for (int i = 0; i < Count; i++)
+            {
+                // 1. MinCost 조건이 추가된 필터링 로직
+                var validCards = p.Deck.Where(c => 
+                    (c.Type == CardType.하수인 || c.Type == CardType.멤버) && 
+                    (SpecificCardId == null || c.CardId == SpecificCardId) &&
+                    (TargetCardType == null || c.Type == TargetCardType) &&
+                    (MaxCost == null || c.CurrentCost <= MaxCost) &&      // MaxCost 이하인지
+                    (MinCost == null || c.CurrentCost >= MinCost) &&      // [신규] MinCost 이상인지
+                    (TargetTribe == null || c.Tribe == TargetTribe)
+                ).ToList();
+
+                if (validCards.Count > 0)
+                {
+                    var selectedCard = validCards[state.Rng.Next(validCards.Count)];
+                    p.Deck.Remove(selectedCard);
+                    state.SummonExistingCard(p.Uid, selectedCard);
+                }
+                else
+                {
+                    break;
+                }
+            }
+
+            state.RaiseEffectLog(context.OwnerUid, context.SourceCard?.CardId, "SummonFromDeckAction");
+
+            return Task.CompletedTask;
+        }
+    }
+}
+</file>
+
+</files>
