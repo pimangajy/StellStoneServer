@@ -26,6 +26,11 @@ namespace GameServer
                 IQueryCollection query = context.Request.Query;
                 string? token = query["token"].FirstOrDefault();
                 gameId = query["gameId"].FirstOrDefault();
+                string? botParam = query["bot"].FirstOrDefault() ?? query["singlePlayer"].FirstOrDefault();
+
+                bool isBotRequested = string.Equals(botParam, "true", StringComparison.OrdinalIgnoreCase) 
+                                   || string.Equals(botParam, "1", StringComparison.OrdinalIgnoreCase)
+                                   || (!string.IsNullOrEmpty(gameId) && (gameId.StartsWith("bot_", StringComparison.OrdinalIgnoreCase) || gameId.StartsWith("story_", StringComparison.OrdinalIgnoreCase)));
 
                 // 1-1. 필수 파라미터 검사
                 if (string.IsNullOrEmpty(token) || string.IsNullOrEmpty(gameId))
@@ -58,14 +63,14 @@ namespace GameServer
                 // ==================================================================
                 // 2. 인증 성공 -> GameRoomManager에 위임 (수정됨)
                 // ==================================================================
-                Console.WriteLine($"✅ [WS {connectionId}] WebSocket 인증 성공! UID: {uid}, GameID: {gameId}");
+                Console.WriteLine($"✅ [WS {connectionId}] WebSocket 인증 성공! UID: {uid}, GameID: {gameId}, BotRequested: {isBotRequested}");
                 Console.WriteLine($"[WS {connectionId}] GameRoomManager에게 연결을 위임합니다...");
 
                 // (핵심 수정)
                 // GameRoomManager에게 연결 처리를 위임합니다.
                 // 'await'로 인해, 이 플레이어의 연결이 완전히 끊길 때까지(GameRoom의 루프가 끝날 때까지)
                 // 이 HandleConnectionAsync 메서드는 여기서 '대기' 상태가 됩니다.
-                await GameRoomManager.JoinRoomAsync(gameId, uid, webSocket, context, db);
+                await GameRoomManager.JoinRoomAsync(gameId, uid, webSocket, context, db, isBotRequested);
                 
                 // --- 플레이어 연결이 끊기면 await가 풀리고 이 아래로 코드가 진행됩니다 ---
 

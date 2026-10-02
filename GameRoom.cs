@@ -17,8 +17,8 @@ namespace GameServer
     /// </summary>
     public class GameRoom
     {
-        // (신규) 디버그 모드 스위치 (이걸 true로 하면 혼자서 테스트 가능)
-        private const bool ENABLE_SINGLE_PLAYER_DEBUG = true;
+        // 방 단위 봇 모드 플래그 (개별 요청 또는 gameId 접두사)
+        public bool IsBotRoom { get; set; } = false;
         
         // (수정) private _gameId -> public GameId 속성
         public string GameId { get; private set; }
@@ -31,11 +31,12 @@ namespace GameServer
         // Key: Uid, Value: GamePlayer (플레이어 정보)
         private readonly ConcurrentDictionary<string, GamePlayer> _players = new ConcurrentDictionary<string, GamePlayer>();
 
-        public GameRoom(string gameId, FirestoreDb db)
+        public GameRoom(string gameId, FirestoreDb db, bool isBotRoom = false)
         {
             GameId = gameId;
             _db = db;
-            Console.WriteLine($"[GameRoom {GameId}] 생성됨.");
+            IsBotRoom = isBotRoom;
+            Console.WriteLine($"[GameRoom {GameId}] 생성됨. (BotRoom: {IsBotRoom})");
         }
 
         /// <summary>
@@ -64,10 +65,10 @@ namespace GameServer
             // (중요) 플레이어의 덱을 서버가 직접 DB에서 로드 (치팅 방지)
             try
             {
-                player.Deck = await LoadPlayerDeckAsync(player.Uid);
+                player.Deck = await LoadPlayerDeckAsync(player);
                 if (player.Deck == null) throw new Exception("선택된 덱을 불러오는 데 실패했습니다.");
                 deckLoadedSuccessfully = true;
-                Console.WriteLine($"[GameRoom {GameId}] 플레이어 {player.Uid}의 덱({player.Deck.deckId}) 로드 성공.");
+                Console.WriteLine($"[GameRoom {GameId}] 플레이어 {player.Uid} ({player.Username ?? "무명"})의 덱({player.Deck.deckId}) 로드 성공.");
             }
             catch (Exception ex)
             {
@@ -80,13 +81,14 @@ namespace GameServer
                 return;
             }
 
-            // === (신규) 싱글 플레이어 디버그 모드 로직 === (싱글 테스트) 
-            if (ENABLE_SINGLE_PLAYER_DEBUG && _players.Count == 1 && deckLoadedSuccessfully)
+            // === 싱글 플레이어 봇 모드 로직 === (봇 방으로 지정된 방만 봇 생성)
+            bool shouldSpawnBot = IsBotRoom;
+            if (shouldSpawnBot && _players.Count == 1 && deckLoadedSuccessfully)
             {
-                Console.WriteLine($"[GameRoom] 디버그 모드: Bot 플레이어를 생성합니다.");
+                Console.WriteLine($"[GameRoom {GameId}] 🤖 Bot 플레이어를 생성합니다. (IsBotRoom: {IsBotRoom})");
                 
                 // 1. Bot 생성 (WebSocket 없음)
-                var botPlayer = new GamePlayer("BOT_UID", null!, "BOT_CONNECTION");
+                var botPlayer = new GamePlayer("BOT_UID", null!, "BOT_CONNECTION", "AI 봇");
                 botPlayer.IsBot = true;
                 
                 // 2. Bot에게 플레이어와 똑같은 덱 복사해주기
@@ -95,7 +97,12 @@ namespace GameServer
                 { 
                     deckId = "BOT_DECK", 
                     deckName = "Bot Deck", 
-                    cardIds = new List<string>(player.Deck.cardIds!) // 카드 목록 복사
+                    deckClass = player.Deck.deckClass,
+                    leaderSkinId = player.Deck.GetEquippedSkinId(),
+                    cardIds = new List<string>(player.Deck.cardIds!), // 카드 목록 복사
+                    sideDeckCardIds = player.Deck.sideDeckCardIds != null 
+                        ? new List<string>(player.Deck.sideDeckCardIds) 
+                        : new List<string>()
                 };
 
                 // 3. 방에 Bot 추가
@@ -136,21 +143,22 @@ namespace GameServer
         /// <summary>
         /// (권위) Firestore DB에서 플레이어의 대표 덱 정보를 불러옵니다.
         /// </summary>
-        private async Task<DeckData?> LoadPlayerDeckAsync(string uid)
+        private async Task<DeckData?> LoadPlayerDeckAsync(GamePlayer player)
         {
-            DocumentReference userDocRef = _db.Collection("Users").Document(uid);
+            DocumentReference userDocRef = _db.Collection("Users").Document(player.Uid);
             DocumentSnapshot userSnapshot = await userDocRef.GetSnapshotAsync();
             if (!userSnapshot.Exists)
             {
-                Console.WriteLine($"[GameRoom {GameId}] ❌ 유저 문서를 찾을 수 없습니다: {uid}");
+                Console.WriteLine($"[GameRoom {GameId}] ❌ 유저 문서를 찾을 수 없습니다: {player.Uid}");
                 return null;
             }
 
             UserData? userData = userSnapshot.ConvertTo<UserData>();
+            player.Username = userData?.Username ?? (userSnapshot.ContainsField("username") ? userSnapshot.GetValue<string>("username") : null);
             
             if (string.IsNullOrEmpty(userData?.SelectDeck))
             {
-                Console.WriteLine($"[GameRoom {GameId}] ❌ 유저 {uid}에게 'SelectDeck'이 설정되지 않았습니다.");
+                Console.WriteLine($"[GameRoom {GameId}] ❌ 유저 {player.Uid}에게 'SelectDeck'이 설정되지 않았습니다.");
                 return null;
             }
 
@@ -253,14 +261,21 @@ namespace GameServer
             {
                 GamePlayer remainingPlayer = _players.Values.First();
                 
-                // (게임 규칙) 상대가 나가면 즉시 승리
-                var gameOverMessage = new S_GameOver
+                // (게임 규칙) 상대가 나가면 즉시 승리 처리 및 보상 지급
+                if (_gameState != null)
                 {
-                    action = GameActionType.GAME_OVER,
-                    winnerUid = remainingPlayer.Uid,
-                    reason = "OPPONENT_DISCONNECTED"
-                };
-                await SendMessageToPlayerAsync(remainingPlayer, JsonConvert.SerializeObject(gameOverMessage));
+                    await _gameState.EndGameAsync(remainingPlayer.Uid, "OPPONENT_DISCONNECTED");
+                }
+                else
+                {
+                    var gameOverMessage = new S_GameOver
+                    {
+                        action = GameActionType.GAME_OVER,
+                        winnerUid = remainingPlayer.Uid,
+                        reason = "OPPONENT_DISCONNECTED"
+                    };
+                    await SendMessageToPlayerAsync(remainingPlayer, JsonConvert.SerializeObject(gameOverMessage));
+                }
             }
             
             // TODO: 게임이 진행 중이었다면 GameState도 정리

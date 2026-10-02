@@ -3,7 +3,7 @@ using System.Threading.Tasks;
 namespace GameServer.Effects.Actions
 {
     /// <summary>
-    /// 타겟 지정 없이, 이 카드를 사용한 플레이어에게 즉시 마나를 부여하는 액션입니다.
+    /// ?��?지???�이, ??카드�??�용???�레?�어?�게 즉시 마나�?부?�하???�션?�니??
     /// </summary>
     public class GainManaAction : IAction
     {
@@ -13,16 +13,16 @@ namespace GameServer.Effects.Actions
 
         public Task ExecuteAsync(GameState state, EffectContext context)
         {
-            // 타겟(TargetEntity) 검사를 아예 하지 않습니다!
+            // ?��?TargetEntity) 검?��? ?�예 ?��? ?�습?�다!
             
-            // 1. 카드를 낸 주인의 상태를 가져옵니다.
+            // 1. 카드�???주인???�태�?가?�옵?�다.
             PlayerState p = state.GetPlayerState(context.OwnerUid);
 
-            // 2. 최대 마나를 초과하여 임시 마나를 얻을 수 있도록 직접 더해줍니다.
+            // 2. 최�? 마나�?초과?�여 ?�시 마나�??�을 ???�도�?직접 ?�해줍니??
             p.CurrentMana += Amount;
 
-            // 참고: 마나 수치가 바뀌면 효과 처리가 모두 끝난 직후 
-            // GameState.BroadcastUpdatesAsync에서 알아서 클라이언트(S_UpdateMana)로 동기화해 줍니다.
+            // 참고: 마나 ?�치가 바뀌면 ?�과 처리가 모두 ?�난 직후 
+            // GameState.BroadcastUpdatesAsync?�서 ?�아???�라?�언??S_UpdateMana)�??�기?�해 줍니??
             state.RaiseEffectLog(context.OwnerUid, context.SourceCard?.CardId, "GainManaAction");
             return Task.CompletedTask;
         }

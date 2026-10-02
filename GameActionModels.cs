@@ -18,6 +18,17 @@ namespace GameServer
     }
 
     /// <summary>
+    /// 카드의 출처(획득 경로)를 나타냅니다.
+    /// </summary>
+    public enum CardOrigin
+    {
+        Deck = 0,        // 덱에서 정상 드로우/서치된 카드
+        SideDeck = 1,    // 사이드덱에서 코스트를 지불하고 가져온 카드
+        Graveyard = 2,   // 묘지에서 회수/재사용된 카드
+        Created = 3      // 주문/효과/토큰으로 새로 생성된 카드
+    }
+
+    /// <summary>
     /// 클라이언트와 서버가 주고받는 모든 메시지(액션)의 종류를 정의합니다.
     /// </summary>
     public enum GameActionType
@@ -34,9 +45,11 @@ namespace GameServer
         VALID_TARGETS_REQUEST,// 타겟 확인
         VALID_ATTACK_TARGETS_REQUEST, // 공격가능한 대상 요청
         ATTACK,              // 공격 명령
-        USE_MEMBER_ABILITY,  // 멤버 특수 능력 사용
         CONCEDE,             // 항복
         MAKE_CHOICE,         // 클라이언트가 선택 결과를 보냄
+        VALID_MEMBER_SKILL_TARGETS_REQUEST, // [멤버] 스킬 조준 가능 대상 요청
+        USE_MEMBER_SKILL,                   // [멤버] 스킬 사용 요청
+        GET_CARD_FROM_SIDE_DECK,            // [사이드덱] 사이드덱에서 카드 가져오기 요청
 
         // ==========================================
         // 서버 -> 클라이언트 (S -> C) 메시지
@@ -55,10 +68,19 @@ namespace GameServer
         PLAY_CARD_FAIL,            // 카드 사용 실패
         VALID_TARGETS_RESPONSE,    // 타겟 가능한 객체 전송
         VALID_ATTACK_TARGETS_RESPONSE,  // 공격 가능한 대상 전송
+        VALID_MEMBER_SKILL_TARGETS_RESPONSE, // [멤버] 스킬 조준 가능 대상 전송
+        USE_MEMBER_SKILL_SUCCESS,           // [멤버] 스킬 사용 성공 브로드캐스트
+        USE_MEMBER_SKILL_FAIL,              // [멤버] 스킬 사용 실패 알림
         UPDATE_HAND_CARDS,         // 손패 카드 상태(비용, 스탯 등) 갱신
         REQUEST_CHOICE,            // 서버가 클라이언트에게 선택을 요청함
         GAME_OVER,                 // 게임 종료
-        ERROR                      // 서버 에러
+        ERROR,                     // 서버 에러
+        GET_CARD_FROM_SIDE_DECK_SUCCESS,    // [사이드덱] 카드 가져오기 성공 브로드캐스트
+        GET_CARD_FROM_SIDE_DECK_FAIL,       // [사이드덱] 카드 가져오기 실패 알림
+        CARD_CREATED,                       // [신규] (S->C) 카드 생성(손패 획득) 알림
+        SEND_EMOTE,                         // [신규] (C->S) 감정표현 전송 요청
+        RECEIVE_EMOTE,                      // [신규] (S->C) 감정표현 수신(브로드캐스트) 알림
+        NEW_LOG_EVENT                       // [신규] (S->C) 새로운 행동 기록(히스토리 타일) 알림
     }
 
     /// <summary>
@@ -90,6 +112,7 @@ namespace GameServer
         public string? cardId{ get; set; } // 카드 원본 ID (예: "Fireball_001")
         public string? instanceId{ get; set; } // 이 게임에서 이 카드를 식별하는 고유 ID (예: "HandCard_123")
         public string? cardName{ get; set; }
+        public CardOrigin origin { get; set; } = CardOrigin.Deck; // 카드의 획득 출처 (덱, 사이드덱, 묘지, 생성)
         
         // (신규) 손/덱 버프를 위한 '현재 상태' 필드
         public int currentCost{ get; set; }   // 현재 비용 (버프/너프 적용됨)
@@ -97,10 +120,34 @@ namespace GameServer
         public int currentHealth{ get; set; } // 현재 체력 (하수인 전용)
         
         // 부여된 효과(버프/너프) 목록
-        public List<EnchantmentInfo> enchantments = new List<EnchantmentInfo>();
+        public List<EnchantmentInfo> enchantments { get; set; } = new List<EnchantmentInfo>();
+
+        // 손패 누적 스택 수치
+        public int customValue { get; set; } = 0;
 
         // 이 카드가 대상으로 삼을 수 있는 현재 필드의 EntityId 목록
         public List<int>? validTargetIds { get; set; } 
+
+        // 손패 한도(10장) 초과 등으로 인해 소각(Graveyard 직행)되었는지 여부
+        public bool isBurned { get; set; } = false;
+
+        // 🚀 [신규 추가] 실시간 증폭(Aura) 및 동적 스탯 정보
+        public bool isAmplified { get; set; } = false;          // 전체 증폭 상태 여부 (true면 클라이언트에서 지속 오라/이펙트 활성화)
+        public bool isSpellAmplified { get; set; } = false;     // 주문 피해 증폭 여부
+        public bool isBuffAmplified { get; set; } = false;      // 주문 버프 수치 증폭 여부
+
+        // 🚀 [신규 추가] 실시간 주문 피해량 정보
+        public int dynamicDamage { get; set; } = 0;         // 증폭이 적용된 최종 피해량 (예: 3 -> 4)
+        public int baseDamage { get; set; } = 0;            // 증폭 전 기본 피해량 (예: 3)
+        public int spellAmpBonus { get; set; } = 0;         // 적용된 순수 주문 증폭치 (+1, +2 등)
+
+        // 🚀 [신규 추가] 실시간 주문 버프 수치 정보
+        public int dynamicBuffAttack { get; set; } = 0;     // 증폭이 적용된 최종 공격력 버프량 (예: 1 -> 2)
+        public int dynamicBuffHealth { get; set; } = 0;     // 증폭이 적용된 최종 체력 버프량 (예: 1 -> 2)
+        public int baseBuffAttack { get; set; } = 0;        // 증폭 전 기본 공격력 버프량
+        public int baseBuffHealth { get; set; } = 0;        // 증폭 전 기본 체력 버프량
+        public int buffAmpAtkBonus { get; set; } = 0;       // 적용된 공격력 버프 증폭치 (+1 등)
+        public int buffAmpHpBonus { get; set; } = 0;        // 적용된 체력 버프 증폭치 (+1 등)
     }
 
     /// <summary>
@@ -121,14 +168,22 @@ namespace GameServer
         
         // List<string>으로 키워드 관리
         // (예: ["TAUNT", "POISONOUS"])
-        public List<CardKeywords>? keywords = new List<CardKeywords>(); 
+        public List<CardKeywords>? keywords { get; set; } = new List<CardKeywords>(); 
 
-            // 필드에 나온 개체가 받고 있는 효과 목록
-        public List<EnchantmentInfo> enchantments = new List<EnchantmentInfo>();
+        // 이 개체가 보유한 활성 효과 트리거 목록 (예: ON_TURN_END, ON_DEATH 등)
+        public List<EffectTriggerType> activeTriggers { get; set; } = new List<EffectTriggerType>();
 
-        public int position; 
-        public bool isMember;
-        public bool isLeader;
+        // 필드에 나온 개체가 받고 있는 효과 목록
+        public List<EnchantmentInfo> enchantments { get; set; } = new List<EnchantmentInfo>();
+
+        public int position { get; set; }
+        public bool isMember { get; set; }
+        public bool isLeader { get; set; }
+        public string? skinId { get; set; } // 장착된 리더/유닛 스킨 ID
+
+        // 멤버 카드 액티브 스킬 정보
+        public List<MemberSkillData>? memberSkills { get; set; }
+        public bool hasUsedSkillThisTurn { get; set; }
     }
 
     /// <summary>
@@ -177,6 +232,9 @@ namespace GameServer
         FORCE_ATTACK,     // 강제 공격
         GRANT_KEYWORD,    // 키워드 부여
         MANA_MOD,          // 마나 조작
+        DISCARD,          // 손패에서 카드를 버림
+        RETURN_TO_HAND,   // 필드 하수인을 손패로 되돌림 (바운스)
+        SHUFFLE_TO_DECK,  // 필드 하수인을 덱으로 섞어 넣음
     }
 
     /// <summary>
@@ -186,25 +244,33 @@ namespace GameServer
     {
         NONE = 0,
         ON_PLAY,          // 카드를 낼 때 발동 (전투의 함성)
-        ON_DEATH,          // 사망 시 발동 (죽음의 메아리)
+        ON_DEATH,          // 사망 시 발동 (죽음의 메아리 및 사망 감지)
+        ON_SUMMON,         // 소환 시 발동 (소환 감지)
         ON_TURN_START,     // 턴 시작 시
         ON_TURN_END,       // 턴 종료 시
-        ON_ATTACK,        // 공격 시작 시
-        ON_DAMAGE,        // 데미지를 입었을떄
-        ON_HEAL,          // 회복했을떄
-        ON_DRAW,          // 드로우 했을때
-        ON_SUMMON,        // 소환할때
-        ON_AURA,          // 오라
+        ON_ATTACK,         // 공격 시작 시
+        ON_DAMAGE,         // 데미지를 입었을 때
+        ON_HEAL,           // 회복했을 때
+        ON_DRAW,           // 드로우 했을 때
+        ON_AURA,           // 오라 지속 효과
     }
 
     public class EnchantmentInfo
     {
-        public int sourceEntityId;       // 이 버프를 부여한 주체의 EntityId (오라 삭제 등 추적용)
-        public GameEventType effectType; // BUFF, GRANT_KEYWORD, COST_MOD 등 어떤 종류의 효과인지
-        public int attackMod;            // 부여받은 공격력 수치
-        public int healthMod;            // 부여받은 체력 수치
-        public int costMod;              // 부여받은 비용 감소/증가 수치
-        public string? grantedKeyword;   // 부여받은 특수 키워드 (예: "Rush")
+        public int sourceEntityId { get; set; }       // 이 버프를 부여한 주체의 EntityId (오라 삭제 등 추적용)
+        public string? sourceCardId { get; set; }     // 버프를 부여한 원본 카드 ID (클라이언트 아이콘 썸네일용)
+        public string? sourceCardName { get; set; }   // 버프를 부여한 원본 카드 이름
+        public string? description { get; set; }      // 버프 효과 상세 설명 (툴팁 텍스트용)
+        public GameEventType effectType { get; set; } // BUFF, GRANT_KEYWORD, COST_MOD 등 어떤 종류의 효과인지
+        public int attackMod { get; set; }            // 부여받은 공격력 수치
+        public int healthMod { get; set; }            // 부여받은 체력 수치
+        public int costMod { get; set; }              // 부여받은 비용 감소/증가 수치
+        public string? grantedKeyword { get; set; }   // 부여받은 특수 키워드 (예: "Rush")
+        public int duration { get; set; } = 0;        // 지속 턴 수 (0 = 영구 지속, > 0 = 턴 종료 시마다 차감)
+        public int spellAmpMod { get; set; } = 0;
+        public int spellWeaknessMod { get; set; } = 0;
+        public int buffAmpAttackMod { get; set; } = 0;
+        public int buffAmpHealthMod { get; set; } = 0;
     }
 
     /// <summary>
@@ -213,18 +279,17 @@ namespace GameServer
     /// </summary>
     public class GameEvent
     {
-        // 1. 기존 string에서 enum으로 변경
         public GameEventType eventType; 
 
         public int sourceEntityId; // 사건의 주체 (누가)
         public int targetEntityId; // 사건의 대상 (누구에게)
 
-        public int value;          // 수치 (데미지량, 힐량 등)
+        public int value;          // 주 수치 (데미지량, 힐량, 공격력 버프 등)
+        public int value2;         // 부 수치 (체력 버프 등)
 
-        // 2. 범용 문자열 데이터 (예: 카드 ID 등)
-        public string? stringValue;
+        public string? cardId;      // 발동된 카드 원본 에셋 ID (주문 ID 등)
+        public string? stringValue; // 범용 문자열 데이터 (부여된 키워드명 등)
 
-        // 3. (신규 권장) 효과 발동 트리거를 명확하게 구분하기 위한 속성
         public EffectTriggerType triggerType; 
 
         public EntityData? entityData; // 객체 데이터
@@ -240,17 +305,19 @@ namespace GameServer
     public class C_DebugSpecificCardDraw : BaseDebugAction
     {
         public string? targetCardId;
+        public bool isOpponent; // 상대방 덱에서 드로우 여부
     }
     
     // [디버그] 덱 정보 요청 (C -> S)
     public class C_DebugRequestDeckInfo : BaseDebugAction
     {
-        // 필드 불필요 (debugAction 값만으로 충분)
+        public bool isOpponent; // 상대방 덱 정보 요청 여부
     }
 
     // [디버그] 덱 정보 응답 (S -> C)
     public class S_DebugResponseDeckInfo : BaseDebugAction
     {
+        public bool isOpponent; // 상대방 덱 정보 여부
         public List<CardInfo>? deckCards; // 현재 덱에 남은 카드 리스트
     }
 
@@ -334,6 +401,33 @@ namespace GameServer
     }
 
     /// <summary>
+    /// (C->S) 필드의 멤버 카드가 특정 스킬을 사용하려 할 때 조준 가능한 타겟 목록을 요청합니다.
+    /// </summary>
+    public class C_ValidMemberSkillTargetsRequest : BaseGameAction
+    {
+        public C_ValidMemberSkillTargetsRequest()
+        {
+            action = GameActionType.VALID_MEMBER_SKILL_TARGETS_REQUEST;
+        }
+        public int entityId { get; set; }  // 멤버 EntityId
+        public int skillId { get; set; }   // 스킬 번호
+    }
+
+    /// <summary>
+    /// (C->S) 필드의 멤버 카드 스킬을 최종 사용합니다.
+    /// </summary>
+    public class C_UseMemberSkill : BaseGameAction
+    {
+        public C_UseMemberSkill()
+        {
+            action = GameActionType.USE_MEMBER_SKILL;
+        }
+        public int entityId { get; set; }       // 멤버 EntityId
+        public int skillId { get; set; }        // 스킬 번호
+        public int targetEntityId { get; set; } // 대상 EntityId (비타겟팅일 경우 0)
+    }
+
+    /// <summary>
     /// (C->S) 클라이언트가 서버의 선택 요구(REQUEST_CHOICE)에 응답할 때 사용합니다.
     /// </summary>
     public class C_MakeChoice : BaseGameAction
@@ -348,17 +442,6 @@ namespace GameServer
         
         // 3. 특정 하수인(타겟)을 선택했을 경우의 값 (-1이면 선택안함)
         public int selectedEntityId { get; set; } = -1; 
-    }
-
-    /// <summary>
-    /// (C->S) 플레이어가 '멤버'의 특수 능력을 사용합니다.
-    /// </summary>
-    public class C_UseMemberAbility : BaseGameAction
-    {
-        // action = "USE_MEMBER_ABILITY"
-        public int memberEntityId; // 능력을 사용하는 내 '멤버'의 ID
-        public string? abilityId; // 사용할 능력의 ID (예: "Ability_Heal_1")
-        public int targetEntityId; // 능력 대상 ID (대상이 없으면 0 또는 -1)
     }
 
     /// <summary>
@@ -397,6 +480,10 @@ namespace GameServer
         // action = "MULLIGAN_INFO"
         public List<CardInfo>? cardsToMulligan; // 교체할 수 있는 카드 5장 목록
         public long mulliganEndTime; // 멀리건 종료 시간 (Unix timestamp)
+
+        // 나와 적의 리더(영웅) 정보
+        public EntityData? myLeader;
+        public EntityData? enemyLeader;
     }
 
     /// <summary>
@@ -420,13 +507,9 @@ namespace GameServer
         // action = "GAME_READY"
         public string? firstPlayerUid; // 선공 플레이어의 UID
         public List<CardInfo>? finalHand; // 나의 최종 손패
-
         public List<CardInfo>? enermyfinalHand; // 적의 최종 손패
-
-        // 나와 적의 리더(영웅) 정보
-        public EntityData? myLeader;
-        public EntityData? enemyLeader;
-
+        public List<CardInfo>? mySideDeck; // 🌟 나의 사이드덱 카드 정보 목록
+        public string? opponentName { get; set; } // 상대방 플레이어 닉네임
     }
 
     public enum GamePhase
@@ -446,6 +529,7 @@ namespace GameServer
         public string? TurnPlayerUid; // 새 턴을 시작하는 플레이어 UID
         public GamePhase phase; // "Standby", "Draw", "Main", "End"
         public CardInfo? drawnCard; // (Draw Phase 전용) 방금 뽑은 카드 (null일 수 있음)
+        public bool hasDrawn; // (Draw Phase 전용) 실제로 드로우가 성공했는지 여부 (드로우 봉인 시 false)
         public long turnEndTime; // (Main Phase 전용) 턴 종료 시간 (Unix timestamp)
     }
 
@@ -468,6 +552,19 @@ namespace GameServer
         // action = GameActionType.DRAW_CARD
         public string? playerUid;   // 카드를 뽑은 플레이어의 UID
         public CardInfo? drawnCard; // 뽑은 카드 정보 (상대방에게 보낼 때는 Fog of War를 위해 null 처리)
+    }
+
+    /// <summary>
+    /// (S->C) 새 카드가 생성되어 손패에 추가되었음을 알립니다. (토큰 창조, 효과 획득 등)
+    /// 상대방에게 전송되어 일반 드로우가 아닌 '카드 생성 애니메이션'을 실행할 수 있도록 합니다.
+    /// </summary>
+    public class S_CardCreated : BaseGameAction
+    {
+        // action = GameActionType.CARD_CREATED
+        public string? playerUid;      // 카드를 생성/획득한 플레이어의 UID
+        public CardInfo? card;         // 생성된 카드 정보 (상대방에게는 null로 마스킹)
+        public CardInfo? createdCard;  // card와 동일 (클라이언트 접근 편의성)
+        public int handCount;          // 카드가 추가된 후 해당 플레이어의 총 손패 장수
     }
 
     /// <summary>
@@ -537,6 +634,49 @@ namespace GameServer
     }
 
     /// <summary>
+    /// (S->C) 멤버 스킬로 조준 가능한 대상들의 EntityId 목록을 회신합니다.
+    /// </summary>
+    public class S_ValidMemberSkillTargetsResponse : BaseGameAction
+    {
+        public S_ValidMemberSkillTargetsResponse()
+        {
+            action = GameActionType.VALID_MEMBER_SKILL_TARGETS_RESPONSE;
+        }
+        public int entityId { get; set; }
+        public int skillId { get; set; }
+        public List<int> validTargetIds { get; set; } = new List<int>();
+    }
+
+    /// <summary>
+    /// (S->C) 멤버 스킬이 성공적으로 발동되었음을 브로드캐스트합니다.
+    /// </summary>
+    public class S_UseMemberSkillSuccess : BaseGameAction
+    {
+        public S_UseMemberSkillSuccess()
+        {
+            action = GameActionType.USE_MEMBER_SKILL_SUCCESS;
+        }
+        public int memberEntityId { get; set; }
+        public int skillId { get; set; }
+        public int targetEntityId { get; set; }
+        public int currentHp { get; set; }
+    }
+
+    /// <summary>
+    /// (S->C) 멤버 스킬 발동이 실패했음을 알립니다.
+    /// </summary>
+    public class S_UseMemberSkillFail : BaseGameAction
+    {
+        public S_UseMemberSkillFail()
+        {
+            action = GameActionType.USE_MEMBER_SKILL_FAIL;
+        }
+        public int memberEntityId { get; set; }
+        public int skillId { get; set; }
+        public string? reason { get; set; }
+    }
+
+    /// <summary>
     /// (S->C) 게임 진행 중(효과 발동 중) 플레이어의 개입이 필요할 때 서버가 전송합니다.
     /// </summary>
     public class S_RequestChoice : BaseGameAction
@@ -595,13 +735,41 @@ namespace GameServer
     }
 
     /// <summary>
+    /// 대전 종료 후 플레이어가 획득한 보상 및 갱신된 재화/성장 상태
+    /// </summary>
+    public class PlayerMatchRewardResult
+    {
+        public int EarnedGold { get; set; }
+        public int EarnedExp { get; set; }
+        public int CurrentGold { get; set; }
+        public int CurrentLevel { get; set; }
+        public int CurrentExp { get; set; }
+        public int MaxExp { get; set; }
+        public bool IsLevelUp { get; set; }
+        public int ScoreChange { get; set; }
+        public int CurrentScore { get; set; }
+    }
+
+    /// <summary>
     /// (S->C) 게임이 종료되었음을 알립니다.
+    /// 각 플레이어에게 맞춤화된 획득 재화 및 성장 정보가 포함됩니다.
     /// </summary>
     public class S_GameOver : BaseGameAction
     {
         // action = "GAME_OVER"
-        public string? winnerUid; // 승자 UID
+        public string? winnerUid; // 승자 UID (무승부 시 "DRAW")
         public string? reason; // 종료 사유 (예: "체력 0", "항복", "연결 끊김")
+
+        // 플레이어 맞춤 획득 보상 및 성장 정보
+        public int earnedGold;     // 이번 매치로 획득한 골드
+        public int earnedExp;      // 이번 매치로 획득한 경험치
+        public int currentGold;    // 갱신된 보유 골드
+        public int currentLevel;   // 현재 레벨
+        public int currentExp;     // 현재 경험치
+        public int maxExp;         // 레벨업에 필요한 경험치 (currentLevel * 100)
+        public bool isLevelUp;     // 레벨업 여부
+        public int scoreChange;    // 점수(랭크 포인트) 변동 (+30, -15 등)
+        public int currentScore;   // 갱신된 점수
     }
 
     /// <summary>
@@ -611,5 +779,124 @@ namespace GameServer
     {
         // action = "ERROR"
         public string? message;
+    }
+
+    // ==================================================================
+    // 사이드덱 관련 통신 패킷 (C <-> S)
+    // ==================================================================
+
+    /// <summary>
+    /// [C->S] 사이드덱에서 원하는 카드를 손패로 가져오겠다고 요청합니다.
+    /// </summary>
+    public class C_GetCardFromSideDeck : BaseGameAction
+    {
+        // action = "GET_CARD_FROM_SIDE_DECK"
+        public string? cardInstanceId; // 가져올 카드의 인스턴스 ID (또는 cardId)
+    }
+
+    /// <summary>
+    /// [S->C] 사이드덱에서 카드를 성공적으로 가져왔음을 브로드캐스트합니다.
+    /// </summary>
+    public class S_GetCardFromSideDeckSuccess : BaseGameAction
+    {
+        // action = "GET_CARD_FROM_SIDE_DECK_SUCCESS"
+        public string? playerUid;              // 카드를 가져온 플레이어 UID
+        public CardInfo? card;                 // 가져온 카드 정보 (본인에게는 상세 정보, 상대에게는 null)
+        public int consumedCost;              // 지불한 코스트(마나)
+        public int remainingMana;             // 차감 후 남은 마나
+        public int remainingSideDeckCount;     // 남은 사이드덱 장수
+    }
+
+    /// <summary>
+    /// [S->C] 사이드덱 카드 가져오기 요청이 규칙 위반으로 실패했음을 알립니다.
+    /// </summary>
+    public class S_GetCardFromSideDeckFail : BaseGameAction
+    {
+        // action = "GET_CARD_FROM_SIDE_DECK_FAIL"
+        public string? reason; // 실패 사유 ("마나 부족", "턴 1회 제한 초과", "손패 초과" 등)
+    }
+
+    // ==================================================================
+    // 감정표현(Emote) 관련 통신 패킷 (C <-> S)
+    // ==================================================================
+
+    /// <summary>
+    /// [C->S] 플레이어가 감정표현을 사용할 때 서버로 전송하는 패킷입니다.
+    /// </summary>
+    public class C_SendEmote : BaseGameAction
+    {
+        // action = GameActionType.SEND_EMOTE
+        public string emoteId { get; set; } = "";
+        public string message { get; set; } = "";
+
+        public C_SendEmote()
+        {
+            action = GameActionType.SEND_EMOTE;
+        }
+
+        public C_SendEmote(string emoteId, string message = "")
+        {
+            action = GameActionType.SEND_EMOTE;
+            this.emoteId = emoteId;
+            this.message = message;
+        }
+    }
+
+    /// <summary>
+    /// [S->C] 방 안의 플레이어가 감정표현을 사용했을 때 서버가 상대방(또는 양쪽)에게 브로드캐스트하는 패킷입니다.
+    /// </summary>
+    public class S_ReceiveEmote : BaseGameAction
+    {
+        // action = GameActionType.RECEIVE_EMOTE
+        public string senderUid { get; set; } = "";
+        public string emoteId { get; set; } = "";
+        public string message { get; set; } = "";
+
+        public S_ReceiveEmote()
+        {
+            action = GameActionType.RECEIVE_EMOTE;
+        }
+    }
+
+    // ==================================================================
+    // 실시간 인게임 행동 로그 및 히스토리 패킷 (S -> C)
+    // ==================================================================
+
+    /// <summary>
+    /// [S->C] 인게임에서 새로운 행동(소환, 공격, 주문 사용, 사망 등)이 발생했을 때
+    /// 하스스톤 스타일의 히스토리 타일 및 로그 UI 생성을 위해 실시간으로 전송되는 패킷입니다.
+    /// </summary>
+    public class S_NewLogEvent : BaseGameAction
+    {
+        // action = GameActionType.NEW_LOG_EVENT
+        public string? actor { get; set; }          // 행동 주체 (Player UID 또는 "System")
+        public string? playerUid { get; set; }      // 행동을 유발한 플레이어 UID (아군/적군 피아식별용)
+        public string? actionType { get; set; }     // 행동 종류 ("SUMMON", "ATTACK", "PLAY_CARD", "DEATH", "BUFF" 등)
+        public string? message { get; set; }        // 한 줄 요약 텍스트
+        public string? sourceCardId { get; set; }   // 행동/버프의 원본 카드 ID (히스토리 썸네일 아이콘용)
+        public string? sourceCardName { get; set; } // 행동/버프의 원본 카드 이름
+        public int sourceEntityId { get; set; }     // 주체 Entity ID
+        public int targetEntityId { get; set; }     // 대상 Entity ID (없으면 0)
+        public string? targetCardName { get; set; } // 대상 카드/영웅 이름
+        public int value { get; set; }              // 피해량, 회복량, 공격력 등의 주 수치
+        public int value2 { get; set; }             // 체력 버프 등의 부 수치
+        public long timestamp { get; set; }         // 발생 시각 (Unix 밀리초)
+        public List<LogSubEvent>? subEvents { get; set; } // 이 행동으로 인해 파생된 세부 하위 결과 목록
+
+        public S_NewLogEvent()
+        {
+            action = GameActionType.NEW_LOG_EVENT;
+        }
+    }
+
+    /// <summary>
+    /// 단일 액션 번들 내부에 포함되는 개별 세부 결과 이벤트 데이터입니다.
+    /// </summary>
+    public class LogSubEvent
+    {
+        public string type { get; set; } = "";        // "DAMAGE", "HEAL", "DRAW", "SUMMON", "DEATH", "BUFF" 등
+        public string targetName { get; set; } = "";  // 대상 이름 (또는 슬롯 번호)
+        public int value { get; set; }                // 수치 1 (피해량, 회복량, 드로우 장수 등)
+        public int value2 { get; set; }               // 수치 2
     }
 }

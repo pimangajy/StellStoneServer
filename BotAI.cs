@@ -36,8 +36,11 @@ namespace GameServer
                 .Select(c => c.InstanceId)
                 .ToList();
                 
-            // 3. 서버(GameState)로 결정 전송 (유저가 패킷을 보내는 것과 동일한 효과)
-            await _gameState.ProcessMulliganDecisionAsync(_botUid, new C_MulliganDecision { cardInstanceIdsToReplace = toReplace });
+            // 3. 서버(GameState)로 결정 전송 (유저가 패킷을 보내는 것과 동일한 효과, [C-01] 스레드 안전 순차 게이트 통과)
+            await _gameState.ExecuteStateActionAsync(async () =>
+            {
+                await _gameState.ProcessMulliganDecisionAsync(_botUid, new C_MulliganDecision { cardInstanceIdsToReplace = toReplace });
+            });
         
             Console.WriteLine("봇이 멀리건을 결정");
         }
@@ -73,11 +76,14 @@ namespace GameServer
                     if (pos != -1)
                     {
                         Console.WriteLine("봇의 카드 사용");
-                        // 카드 내기 액션 서버로 전송
-                        await _gameState.ProcessPlayCardAsync(_botUid, new C_PlayCard {
-                            handCardInstanceId = card.InstanceId,
-                            position = pos,
-                            targetEntityId = -1 // 단순 AI이므로 타겟 지정 생략 (전투의 함성 등 타겟팅 무시)
+                        // 카드 내기 액션 서버로 전송 ([C-01] 스레드 안전 실행)
+                        await _gameState.ExecuteStateActionAsync(async () =>
+                        {
+                            await _gameState.ProcessPlayCardAsync(_botUid, new C_PlayCard {
+                                handCardInstanceId = card.InstanceId,
+                                position = pos,
+                                targetEntityId = -1 // 단순 AI이므로 타겟 지정 생략 (전투의 함성 등 타겟팅 무시)
+                            });
                         });
                         acted = true;
                         
@@ -87,16 +93,27 @@ namespace GameServer
                 }
             }
 
-            // 3. 공격 로직 (필드의 모든 하수인 동원)
+            // 3. 공격 로직 (필드의 모든 하수인 동원 - 질풍 지원)
             foreach (var entity in me.Field)
             {
-                if (entity != null && entity.CanAttack && !entity.HasAttacked)
+                if (entity == null) continue;
+                int maxAttacks = (entity.Keywords != null && entity.Keywords.Contains(CardKeywords.Windfury)) ? 2 : 1;
+
+                while (entity.CanAttack && entity.AttacksThisTurn < maxAttacks && entity.Health > 0 && !entity.IsDestroyed)
                 {
-                    Console.WriteLine("봇의 공격");
-                    // 단순 AI: 적 하수인을 무시하고 무조건 상대 영웅(Leader) 공격 (명치 메타)
-                    await _gameState.ProcessAttackAsync(_botUid, new C_Attack {
-                        attackerEntityId = entity.EntityId,
-                        defenderEntityId = opponent.Leader.EntityId
+                    // 공격 대상 선정 (도발 하수인 -> 일반 하수인 -> 속공이 아닐 때만 상대 영웅)
+                    var target = FindTargetForAttack(opponent, entity);
+                    if (target == null) break;
+
+                    Console.WriteLine($"봇의 공격: {entity.SourceCard.CardId} -> {(target.IsLeader ? "상대 리더" : target.SourceCard.CardId)}");
+                    
+                    // 공격 명령 서버로 전송 ([C-01] 스레드 안전 실행)
+                    await _gameState.ExecuteStateActionAsync(async () =>
+                    {
+                        await _gameState.ProcessAttackAsync(_botUid, new C_Attack {
+                            attackerEntityId = entity.EntityId,
+                            defenderEntityId = target.EntityId
+                        });
                     });
                     
                     // 연속 공격 시의 행동 지연
@@ -104,8 +121,60 @@ namespace GameServer
                 }
             }
 
-            // 4. 할 일을 모두 마쳤으므로 턴 종료
-            await _gameState.ProcessEndTurnAsync(_botUid);
+            // 4. 할 일을 모두 마쳤으므로 턴 종료 ([C-01] 스레드 안전 실행)
+            await _gameState.ExecuteStateActionAsync(async () =>
+            {
+                await _gameState.ProcessEndTurnAsync(_botUid);
+            });
+        }
+
+        /// <summary>
+        /// 봇이 공격할 최적의 대상(GameEntity)을 찾습니다.
+        /// 1. 도발(Taunt) 하수인 우선
+        /// 2. 일반 적 하수인 (은신 상태 제외)
+        /// 3. 공격 가능한 적 하수인이 없으면 상대 영웅(Leader) - 단, 이번 턴 소환된 속공 유닛은 제외
+        /// </summary>
+        private GameEntity? FindTargetForAttack(PlayerState opponent, GameEntity attacker)
+        {
+            // 살아있고 은신(Stealth)이 아닌 적 하수인 목록 수집
+            var enemyMinions = opponent.Field
+                .Where(e => e != null && e.Health > 0 && !e.IsDestroyed && (e.Keywords == null || !e.Keywords.Contains(CardKeywords.Stealth)))
+                .ToList()!;
+
+            var enemyMembers = opponent.MemberZone
+                .Where(e => e != null && e.Health > 0 && !e.IsDestroyed && (e.Keywords == null || !e.Keywords.Contains(CardKeywords.Stealth)))
+                .ToList()!;
+
+            var allEnemyMinions = enemyMinions.Concat(enemyMembers).ToList();
+
+            // 1. 도발(Taunt) 하수인이 있다면 최우선 공격
+            var tauntMinions = allEnemyMinions
+                .Where(e => e.Keywords != null && e.Keywords.Contains(CardKeywords.Taunt))
+                .ToList();
+
+            if (tauntMinions.Count > 0)
+            {
+                return tauntMinions[0];
+            }
+
+            // 2. 도발이 없다면 일반 적 하수인 우선 공격
+            if (allEnemyMinions.Count > 0)
+            {
+                return allEnemyMinions[0];
+            }
+
+            // 3. 때릴 수 있는 적 하수인이 없다면 상대 영웅(Leader) 공격 (속공 전용 소환턴 유닛 제외)
+            bool isRushOnly = attacker.Keywords != null 
+                           && attacker.Keywords.Contains(CardKeywords.Rush) 
+                           && !attacker.Keywords.Contains(CardKeywords.Charge) 
+                           && attacker.SummonedTurn == _gameState._turnCount;
+
+            if (!isRushOnly && opponent.Leader != null && opponent.Leader.Health > 0)
+            {
+                return opponent.Leader;
+            }
+
+            return null;
         }
 
         /// <summary>

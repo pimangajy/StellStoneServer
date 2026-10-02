@@ -57,26 +57,23 @@ namespace GameServer.Shop
         }
 
         /// <summary>
-        /// 판매 중인 모든 활성 상품 목록을 반환합니다.
+        /// 판매 중인 모든 활성 상품 목록을 반환합니다. (ServerProductDatabase 단일 소스로 위임)
         /// </summary>
         public List<ProductData> GetAllActiveProducts()
         {
-            return _productCache.Values
+            return ServerProductDatabase.Instance.GetAllProducts()
+                .Where(p => p.isActive)
                 .OrderBy(p => p.category_Id)
                 .ThenBy(p => p.productId)
                 .ToList();
         }
 
         /// <summary>
-        /// 특정 상품 ID로 상품 데이터를 조회합니다.
+        /// 특정 상품 ID로 상품 데이터를 조회합니다. (ServerProductDatabase 단일 소스로 위임)
         /// </summary>
         public ProductData? GetProduct(string productId)
         {
-            if (_productCache.TryGetValue(productId, out var product))
-            {
-                return product;
-            }
-            return null;
+            return ServerProductDatabase.Instance.GetProduct(productId);
         }
     }
 }

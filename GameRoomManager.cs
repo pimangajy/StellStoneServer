@@ -21,7 +21,7 @@ namespace GameServer
         /// GameSocketHandler로부터 인증된 플레이어를 받아
         /// 적절한 GameRoom에 입장시키거나, 새 GameRoom을 생성합니다.
         /// </summary>
-        public static async Task JoinRoomAsync(string gameId, string uid, WebSocket webSocket, HttpContext context, FirestoreDb db)
+        public static async Task JoinRoomAsync(string gameId, string uid, WebSocket webSocket, HttpContext context, FirestoreDb db, bool isBotRoom = false)
         {
             // (핵심 로직)
             // 1. gameId로 방을 찾습니다.
@@ -30,9 +30,14 @@ namespace GameServer
             // (GetOrAdd는 이 모든 과정을 스레드 안전하게 한 번에 처리해줍니다.)
             GameRoom room = _rooms.GetOrAdd(gameId, (id) => 
             {
-                Console.WriteLine($"[GameRoomManager] ℹ️ 새 GameRoom 생성 (GameID: {id})");
-                return new GameRoom(id, db); // FirestoreDb 인스턴스 전달
+                Console.WriteLine($"[GameRoomManager] ℹ️ 새 GameRoom 생성 (GameID: {id}, BotRoom: {isBotRoom})");
+                return new GameRoom(id, db, isBotRoom); // FirestoreDb 인스턴스 전달
             });
+
+            if (isBotRoom && !room.IsBotRoom)
+            {
+                room.IsBotRoom = true;
+            }
 
             // 플레이어 객체 생성
             var player = new GamePlayer(uid, webSocket, context.Connection.Id);

@@ -1,12 +1,12 @@
 using System.Threading.Tasks;
-using GameServer.Effects.TargetSelector;
+using GameServer.Effects.Targeting;
 
 namespace GameServer.Effects.Actions
 {
     public class ManaModAction : IAction
     {
         public int Amount { get; set; } // +1(마나 펌핑), -1(마나 번)
-        public ITargetSelector Target { get; set; } = new SelfSelector();
+        public ITargetSelector Target { get; set; } = new TargetSelector { Scope = TargetScope.Self };
 
         public Task ExecuteAsync(GameState state, EffectContext context)
         {

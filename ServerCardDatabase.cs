@@ -1,7 +1,9 @@
 using Google.Cloud.Firestore;
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Threading.Tasks;
+using Newtonsoft.Json;
 
 namespace GameServer
 {
@@ -12,6 +14,8 @@ namespace GameServer
 
         // 카드 데이터를 저장할 딕셔너리 (Key: CardID)
         private Dictionary<string, ServerCardData> _cardCache = new Dictionary<string, ServerCardData>();
+        // [P-03 성능 최적화] GetAllCards 호출 시 반복적인 .ToList() 힙 할당을 방지하기 위한 캐싱 리스트
+        private List<ServerCardData> _cachedCardList = new List<ServerCardData>();
 
         private ServerCardDatabase() { }
 
@@ -28,53 +32,62 @@ namespace GameServer
 
                 _cardCache.Clear();
 
+                var allDump = new Dictionary<string, object>();
+
                 foreach (DocumentSnapshot document in snapshot.Documents)
                 {
-                    if (_cardCache.Count == 30) // 딱 1번만 출력
+                    try
                     {
-                        Dictionary<string, object> fields = document.ToDictionary();
-                        Console.WriteLine("[DEBUG] Firestore 문서 필드 목록:");
-                        foreach (var kvp in fields)
-                        {
-                            Console.WriteLine($" - Key: {kvp.Key}, Value: {kvp.Value}");
-                        }
-                    }
-                    // Firestore 데이터를 객체로 변환
-                    ServerCardData card = document.ConvertTo<ServerCardData>();
-                    
-                    // CardID가 비어있으면 문서 ID를 사용
-                    if (string.IsNullOrEmpty(card.CardID))
-                    {
-                        card.CardID = document.Id;
-                    }
+                        var fields = document.ToDictionary();
+                        allDump[document.Id] = fields;
 
-                    if (!_cardCache.ContainsKey(card.CardID))
-                    {
-                        _cardCache.Add(card.CardID, card);
-                        // (디버그) 처음 5개 정도만 상세 로그 출력 (너무 많으면 콘솔 도배됨)
-                        if (_cardCache.Count <= 5)
+                        // Firestore 데이터를 객체로 변환
+                        ServerCardData card = document.ConvertTo<ServerCardData>();
+                        
+                        // CardID가 비어있으면 문서 ID를 사용
+                        if (string.IsNullOrEmpty(card.CardID))
                         {
-                            // Console.WriteLine($"[DB Load] ID: {card.CardID}, Cost: {card.Cost}, Atk: {card.Attack}, HP: {card.Health}, Name: {card.Name}, Description: {card.Description}");
+                            card.CardID = document.Id;
                         }
+
+                        if (!_cardCache.ContainsKey(card.CardID))
+                        {
+                            _cardCache.Add(card.CardID, card);
+                        }
+                    }
+                    catch (Exception docEx)
+                    {
+                        Console.WriteLine($"[ServerCardDatabase] ⚠️ 개별 카드 로딩 실패 (문서 ID: '{document.Id}'): {docEx.Message}");
                     }
                 }
 
-                Console.WriteLine($"[ServerCardDatabase] ✅ 총 {_cardCache.Count}장의 카드 로드 완료.");
+                _cachedCardList = _cardCache.Values.ToList();
+                Console.WriteLine($"[ServerCardDatabase] ✅ 총 {_cardCache.Count}장의 카드 로드 완료 (캐싱 완료).");
 
-                
+                // Firestore 문서 전체를 텍스트 JSON 파일로 덤프하여 개발자가 직접 확인할 수 있도록 저장
+                try
+                {
+                    string dumpPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "firestore_cards_dump.json");
+                    File.WriteAllText(dumpPath, JsonConvert.SerializeObject(allDump, Formatting.Indented));
+                    Console.WriteLine($"[ServerCardDatabase] 📄 Firestore 문서 덤프 생성 완료 -> {dumpPath}");
+                }
+                catch (Exception dumpEx)
+                {
+                    Console.WriteLine($"[ServerCardDatabase] ⚠️ 덤프 파일 저장 실패: {dumpEx.Message}");
+                }
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"[ServerCardDatabase] ❌ 카드 로딩 실패: {ex.Message}");
+                Console.WriteLine($"[ServerCardDatabase] ❌ 카드 로딩 전체 실패: {ex.Message}");
             }
         }
 
         /// <summary>
-        /// 데이터베이스의 카드를 반환합니다.
+        /// 데이터베이스의 카드를 반환합니다. (캐싱 리스트 반환으로 무할당)
         /// </summary>
         public List<ServerCardData> GetAllCards()
         {
-            return _cardCache.Values.ToList();
+            return _cachedCardList;
         }
 
         /// <summary>
@@ -92,5 +105,7 @@ namespace GameServer
             Console.WriteLine($"[ServerCardDatabase] ⚠️ 알 수 없는 카드 ID 요청됨: {cardId}");
             return null;
         }
+
+        public ServerCardData? GetCard(string cardId) => GetCardData(cardId);
     }
 }
