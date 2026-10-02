@@ -1083,21 +1083,19 @@ namespace GameServer
                 if (e.IsMember)
                 {
                     e.CanAttack = false; // 멤버는 직접 공격 불가
-                    AddPendingUpdate(e);
-                    return;
                 }
-
-                if (e.Keywords != null && e.Keywords.Contains(CardKeywords.Bind))
+                else if (e.Keywords != null && e.Keywords.Contains(CardKeywords.Bind))
                 {
                     e.Keywords.Remove(CardKeywords.Bind);
                     e.Enchantments.RemoveAll(enc => enc.effectType == GameEventType.BIND);
                     e.CanAttack = false; // 이번 턴 공격 불가
-                    AddPendingUpdate(e);
                 }
                 else
                 {
-                    e.CanAttack = true;
+                    e.CanAttack = true; // 일반 하수인 공격 기회 복구
                 }
+
+                AddPendingUpdate(e);
             }
 
             foreach (var e in p.Field) RefreshEntityAttackState(e);
